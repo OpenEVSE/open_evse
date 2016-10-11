@@ -407,12 +407,6 @@ void OnboardDisplay::Init()
 }
 
 #ifdef LCD16X2
-void OnboardDisplay::LcdPrint(int x,int y,const char *s)
-{ 
-  m_Lcd.setCursor(x,y);
-  m_Lcd.print(s); 
-}
-
 void OnboardDisplay::LcdPrint_P(PGM_P s)
 {
   strncpy_P(m_strBuf,s,LCD_MAX_CHARS_PER_LINE);
@@ -441,18 +435,23 @@ void OnboardDisplay::LcdMsg_P(PGM_P l1,PGM_P l2)
   LcdPrint_P(1,l2);
 }
 
-
 // print at (0,y), filling out the line with trailing spaces
 void OnboardDisplay::LcdPrint(int y,const char *s)
 {
-  m_Lcd.setCursor(0,y);
+  LcdPrint(0,y,s);
+}
+// print at (x,y), filling out the line with trailing spaces
+void OnboardDisplay::LcdPrint(int x, int y,const char *s)
+{
+  m_Lcd.setCursor(x,y);
   uint8_t i,len = strlen(s);
-  if (len > LCD_MAX_CHARS_PER_LINE)
-    len = LCD_MAX_CHARS_PER_LINE;
+  int max = LCD_MAX_CHARS_PER_LINE - x;
+  if (len > max)
+    len = max;
   for (i=0;i < len;i++) {
     m_Lcd.write(s[i]);
   }
-  for (i=len;i < LCD_MAX_CHARS_PER_LINE;i++) {
+  for (i=len;i < max;i++) {
     m_Lcd.write(' ');
   }
 }
@@ -1100,16 +1099,21 @@ void BklTypeMenu::Next()
   if (++m_CurIdx >= 2) {
     m_CurIdx = 0;
   }
-  g_OBD.LcdClearLine(1);
-  g_OBD.LcdSetCursor(0,1);
-  g_OBD.LcdPrint(g_sPlus);
-  g_OBD.LcdPrint(g_BklMenuItems[m_CurIdx]);
+
+  int savedIndex = (g_BtnHandler.GetSavedLcdMode() == BKL_TYPE_RGB) ? 0 : 1;
+  if ( savedIndex == m_CurIdx ) {
+    g_OBD.LcdPrint(0,1,g_sPlus);
+    savedIndex = 1;
+  } else {
+    savedIndex = 0;
+  }
+  g_OBD.LcdPrint(savedIndex,1,g_BklMenuItems[m_CurIdx]);
 }
 
 Menu *BklTypeMenu::Select()
 {
   g_OBD.LcdPrint(0,1,g_sPlus);
-  g_OBD.LcdPrint(g_BklMenuItems[m_CurIdx]);
+  g_OBD.LcdPrint(1,1,g_BklMenuItems[m_CurIdx]);
 
   g_EvseController.SetBacklightType((m_CurIdx == 0) ? BKL_TYPE_RGB : BKL_TYPE_MONO);
   g_BtnHandler.SetSavedLcdMode((m_CurIdx == 0) ? BKL_TYPE_RGB : BKL_TYPE_MONO);
@@ -1138,11 +1142,9 @@ void SvcLevelMenu::Init()
 #else
   m_CurIdx = (g_EvseController.GetCurSvcLevel() == 1) ? 0 : 1;
 #endif // ADVPWR
-  //sprintf(g_sTmp,"+%s",g_SvcLevelMenuItems[m_CurIdx]);
-  //g_OBD.LcdPrint(1,g_sTmp);
-  g_OBD.LcdClearLine(1);
+
   g_OBD.LcdPrint(0,1,g_sPlus);
-  g_OBD.LcdPrint(g_SvcLevelMenuItems[m_CurIdx]);
+  g_OBD.LcdPrint(1,1,g_SvcLevelMenuItems[m_CurIdx]);
 }
 
 void SvcLevelMenu::Next()
@@ -1150,12 +1152,19 @@ void SvcLevelMenu::Next()
   if (++m_CurIdx >= SVC_LVL_MNU_ITEMCNT) {
     m_CurIdx = 0;
   }
-  g_OBD.LcdClearLine(1);
-  g_OBD.LcdSetCursor(0,1);
-  if (g_EvseController.GetCurSvcLevel() == (m_CurIdx+1)) {
-    g_OBD.LcdPrint(g_sPlus);
+
+#ifdef ADVPWR
+  int savedIndex = g_EvseController.GetCurSvcLevel();
+#else
+  int savedIndex = (g_EvseController.GetCurSvcLevel() == 1) ? 0 : 1;
+#endif // ADVPWR
+
+  int offset = 0;
+  if (savedIndex == m_CurIdx) {
+    g_OBD.LcdPrint(0,1,g_sPlus);
+    offset++;
   }
-  g_OBD.LcdPrint(g_SvcLevelMenuItems[m_CurIdx]);
+  g_OBD.LcdPrint(offset,1,g_SvcLevelMenuItems[m_CurIdx]);
 }
 
 Menu *SvcLevelMenu::Select()
@@ -1172,7 +1181,7 @@ Menu *SvcLevelMenu::Select()
   g_EvseController.SetSvcLevel(m_CurIdx+1);
 #endif // ADVPWR
   g_OBD.LcdPrint(0,1,g_sPlus);
-  g_OBD.LcdPrint(g_SvcLevelMenuItems[m_CurIdx]);
+  g_OBD.LcdPrint(1,1,g_SvcLevelMenuItems[m_CurIdx]);
 
   g_EvseController.SaveEvseFlags();
 
@@ -1219,20 +1228,19 @@ void MaxCurrentMenu::Next()
   if (m_CurIdx > m_MaxCurrent) {
     m_CurIdx = m_MinCurrent;
   }
-  g_OBD.LcdClearLine(1);
-  g_OBD.LcdSetCursor(0,1);
+  
   if (g_EvseController.GetCurrentCapacity() == m_CurIdx) {
-    g_OBD.LcdPrint(g_sPlus);
+    sprintf(g_sTmp,"+%dA",m_CurIdx);
+  } else {
+    sprintf(g_sTmp,"%dA",m_CurIdx);
   }
-  g_OBD.LcdPrint(m_CurIdx);
-  g_OBD.LcdPrint("A");
+  g_OBD.LcdPrint(0,1,g_sTmp);
 }
 
 Menu *MaxCurrentMenu::Select()
 {
-  g_OBD.LcdPrint(0,1,g_sPlus);
-  g_OBD.LcdPrint(m_CurIdx);
-  g_OBD.LcdPrint("A");
+  sprintf(g_sTmp,"+%dA",m_CurIdx);
+  g_OBD.LcdPrint(0,1,g_sTmp);
   delay(500);
   eeprom_write_byte((uint8_t*)((g_EvseController.GetCurSvcLevel() == 1) ? EOFS_CURRENT_CAPACITY_L1 : EOFS_CURRENT_CAPACITY_L2),m_CurIdx);  
   g_EvseController.SetCurrentCapacity(m_CurIdx);
@@ -1258,19 +1266,20 @@ void DiodeChkMenu::Next()
   if (++m_CurIdx >= 2) {
     m_CurIdx = 0;
   }
-  g_OBD.LcdClearLine(1);
-  g_OBD.LcdSetCursor(0,1);
+
   uint8_t dce = g_EvseController.DiodeCheckEnabled();
+  int offset=0;
   if ((dce && !m_CurIdx) || (!dce && m_CurIdx)) {
-    g_OBD.LcdPrint(g_sPlus);
+    g_OBD.LcdPrint(0,1,g_sPlus);
+    offset++;
   }
-  g_OBD.LcdPrint(g_YesNoMenuItems[m_CurIdx]);
+  g_OBD.LcdPrint(offset,1,g_YesNoMenuItems[m_CurIdx]);
 }
 
 Menu *DiodeChkMenu::Select()
 {
   g_OBD.LcdPrint(0,1,g_sPlus);
-  g_OBD.LcdPrint(g_YesNoMenuItems[m_CurIdx]);
+  g_OBD.LcdPrint(1,1,g_YesNoMenuItems[m_CurIdx]);
 
   g_EvseController.EnableDiodeCheck((m_CurIdx == 0) ? 1 : 0);
 
@@ -1290,7 +1299,7 @@ void GfiTestMenu::Init()
   g_OBD.LcdPrint_P(0,m_Title);
   m_CurIdx = g_EvseController.GfiSelfTestEnabled() ? 0 : 1;
   sprintf(g_sTmp,"+%s",g_YesNoMenuItems[m_CurIdx]);
-  g_OBD.LcdPrint(1,g_sTmp);
+  g_OBD.LcdPrint(0,1,g_sTmp);
 }
 
 void GfiTestMenu::Next()
@@ -1298,19 +1307,20 @@ void GfiTestMenu::Next()
   if (++m_CurIdx >= 2) {
     m_CurIdx = 0;
   }
-  g_OBD.LcdClearLine(1);
-  g_OBD.LcdSetCursor(0,1);
+  
+  int offset=0;
   uint8_t dce = g_EvseController.GfiSelfTestEnabled();
   if ((dce && !m_CurIdx) || (!dce && m_CurIdx)) {
-    g_OBD.LcdPrint(g_sPlus);
+    g_OBD.LcdPrint(0,1,g_sPlus);
+    offset++;
   }
-  g_OBD.LcdPrint(g_YesNoMenuItems[m_CurIdx]);
+  g_OBD.LcdPrint(offset,1,g_YesNoMenuItems[m_CurIdx]);
 }
 
 Menu *GfiTestMenu::Select()
 {
   g_OBD.LcdPrint(0,1,g_sPlus);
-  g_OBD.LcdPrint(g_YesNoMenuItems[m_CurIdx]);
+  g_OBD.LcdPrint(1,1,g_YesNoMenuItems[m_CurIdx]);
 
   g_EvseController.EnableGfiSelfTest((m_CurIdx == 0) ? 1 : 0);
 
@@ -1331,7 +1341,7 @@ void TempOnOffMenu::Init()
   g_OBD.LcdPrint_P(0,m_Title);
   m_CurIdx = g_EvseController.TempChkEnabled() ? 0 : 1;
   sprintf(g_sTmp,"+%s",g_YesNoMenuItems[m_CurIdx]);
-  g_OBD.LcdPrint(1,g_sTmp);
+  g_OBD.LcdPrint(0,1,g_sTmp);
 }
 
 void TempOnOffMenu::Next()
@@ -1339,19 +1349,20 @@ void TempOnOffMenu::Next()
   if (++m_CurIdx >= 2) {
     m_CurIdx = 0;
   }
-  g_OBD.LcdClearLine(1);
-  g_OBD.LcdSetCursor(0,1);
+
+  int offset=0;
   uint8_t dce = g_EvseController.TempChkEnabled();
   if ((dce && !m_CurIdx) || (!dce && m_CurIdx)) {
-    g_OBD.LcdPrint(g_sPlus);
+    g_OBD.LcdPrint(0,1,g_sPlus);
+    offset++;
   }
-  g_OBD.LcdPrint(g_YesNoMenuItems[m_CurIdx]);
+  g_OBD.LcdPrint(offset,1,g_YesNoMenuItems[m_CurIdx]);
 }
 
 Menu *TempOnOffMenu::Select()
 {
   g_OBD.LcdPrint(0,1,g_sPlus);
-  g_OBD.LcdPrint(g_YesNoMenuItems[m_CurIdx]);
+  g_OBD.LcdPrint(1,1,g_YesNoMenuItems[m_CurIdx]);
 
   g_EvseController.EnableTempChk((m_CurIdx == 0) ? 1 : 0);
 
@@ -1379,19 +1390,20 @@ void VentReqMenu::Next()
   if (++m_CurIdx >= 2) {
     m_CurIdx = 0;
   }
-  g_OBD.LcdClearLine(1);
-  g_OBD.LcdSetCursor(0,1);
+
+  int offset=0;
   uint8_t dce = g_EvseController.VentReqEnabled();
   if ((dce && !m_CurIdx) || (!dce && m_CurIdx)) {
-    g_OBD.LcdPrint(g_sPlus);
+    g_OBD.LcdPrint(0,1,g_sPlus);
+    offset++;
   }
-  g_OBD.LcdPrint(g_YesNoMenuItems[m_CurIdx]);
+  g_OBD.LcdPrint(offset,1,g_YesNoMenuItems[m_CurIdx]);
 }
 
 Menu *VentReqMenu::Select()
 {
   g_OBD.LcdPrint(0,1,g_sPlus);
-  g_OBD.LcdPrint(g_YesNoMenuItems[m_CurIdx]);
+  g_OBD.LcdPrint(1,1,g_YesNoMenuItems[m_CurIdx]);
 
   g_EvseController.EnableVentReq((m_CurIdx == 0) ? 1 : 0);
 
@@ -1419,19 +1431,20 @@ void GndChkMenu::Next()
   if (++m_CurIdx >= 2) {
     m_CurIdx = 0;
   }
-  g_OBD.LcdClearLine(1);
-  g_OBD.LcdSetCursor(0,1);
+  
+  int offset=0;
   uint8_t dce = g_EvseController.GndChkEnabled();
   if ((dce && !m_CurIdx) || (!dce && m_CurIdx)) {
-    g_OBD.LcdPrint(g_sPlus);
+    g_OBD.LcdPrint(0,1,g_sPlus);
+    offset++;
   }
-  g_OBD.LcdPrint(g_YesNoMenuItems[m_CurIdx]);
+  g_OBD.LcdPrint(offset,1,g_YesNoMenuItems[m_CurIdx]);
 }
 
 Menu *GndChkMenu::Select()
 {
   g_OBD.LcdPrint(0,1,g_sPlus);
-  g_OBD.LcdPrint(g_YesNoMenuItems[m_CurIdx]);
+  g_OBD.LcdPrint(1,1,g_YesNoMenuItems[m_CurIdx]);
 
   g_EvseController.EnableGndChk((m_CurIdx == 0) ? 1 : 0);
 
@@ -1457,19 +1470,20 @@ void RlyChkMenu::Next()
   if (++m_CurIdx >= 2) {
     m_CurIdx = 0;
   }
-  g_OBD.LcdClearLine(1);
-  g_OBD.LcdSetCursor(0,1);
+
+  int offset=0;
   uint8_t dce = g_EvseController.StuckRelayChkEnabled();
   if ((dce && !m_CurIdx) || (!dce && m_CurIdx)) {
-    g_OBD.LcdPrint(g_sPlus);
+    g_OBD.LcdPrint(0,1,g_sPlus);
+    offset++;
   }
-  g_OBD.LcdPrint(g_YesNoMenuItems[m_CurIdx]);
+  g_OBD.LcdPrint(offset,1,g_YesNoMenuItems[m_CurIdx]);
 }
 
 Menu *RlyChkMenu::Select()
 {
   g_OBD.LcdPrint(0,1,g_sPlus);
-  g_OBD.LcdPrint(g_YesNoMenuItems[m_CurIdx]);
+  g_OBD.LcdPrint(1,1,g_YesNoMenuItems[m_CurIdx]);
 
   g_EvseController.EnableStuckRelayChk((m_CurIdx == 0) ? 1 : 0);
 
@@ -1497,7 +1511,7 @@ void ResetMenu::Next()
   if (++m_CurIdx >= 2) {
     m_CurIdx = 0;
   }
-  g_OBD.LcdClearLine(1);
+  
   g_OBD.LcdPrint(0,1,g_YesNoMenuItems[m_CurIdx]);
 }
 
@@ -1542,13 +1556,13 @@ void RTCMenu::Next()
   if (++m_CurIdx >= 2) {
     m_CurIdx = 0;
   }
-  g_OBD.LcdClearLine(1);
+ 
   g_OBD.LcdPrint(0,1,g_YesNoMenuItems[m_CurIdx]);
 }
 Menu *RTCMenu::Select()
 {
   g_OBD.LcdPrint(0,1,g_sPlus);
-  g_OBD.LcdPrint(g_YesNoMenuItems[m_CurIdx]);
+  g_OBD.LcdPrint(1,1,g_YesNoMenuItems[m_CurIdx]);
   delay(500);
   if (m_CurIdx == 0) {
     return &g_RTCMenuMonth;
@@ -1577,7 +1591,7 @@ void RTCMenuMonth::Next()
   if (++m_CurIdx >= 13) {
     m_CurIdx = 1;
   }
-  g_OBD.LcdClearLine(1);
+
   DtsStrPrint1(g_year,m_CurIdx,g_day,g_hour,g_min,0);
 }
 Menu *RTCMenuMonth::Select()
@@ -1602,7 +1616,7 @@ void RTCMenuDay::Next()
   if (++m_CurIdx >= 32) {
     m_CurIdx = 1;
   }
-  g_OBD.LcdClearLine(1);
+
   DtsStrPrint1(g_year,g_month,m_CurIdx,g_hour,g_min,1);
 }
 Menu *RTCMenuDay::Select()
@@ -1677,7 +1691,7 @@ void RTCMenuMinute::Next()
   if (++m_CurIdx >= 60) {
     m_CurIdx = 0;
   }
-  g_OBD.LcdClearLine(1);
+
   DtsStrPrint1(g_year,g_month,g_day,g_hour,m_CurIdx,4);
 }
 Menu *RTCMenuMinute::Select()
@@ -1716,7 +1730,7 @@ void DelayMenu::Next()
   if (++m_CurIdx >= 3) {
     m_CurIdx = 0;
   }
-  g_OBD.LcdClearLine(1);
+
   g_OBD.LcdPrint(0,1,g_DelayMenuItems[m_CurIdx]);
 }
 Menu *DelayMenu::Select()
@@ -1738,27 +1752,26 @@ void DelayMenuEnableDisable::Init()
 {
   m_CurIdx = !g_DelayTimer.IsTimerEnabled();
   g_OBD.LcdPrint_P(0,g_psDelayTimer);
-  g_OBD.LcdClearLine(1);
   g_OBD.LcdPrint(0,1,g_sPlus);
-  g_OBD.LcdPrint(g_YesNoMenuItems[m_CurIdx]);
+  g_OBD.LcdPrint(1,1,g_YesNoMenuItems[m_CurIdx]);
 }
 void DelayMenuEnableDisable::Next()
 {
   if (++m_CurIdx >= 2) {
     m_CurIdx = 0;
   }
-  g_OBD.LcdClearLine(1);
+  
+  int offset=0;
   if (m_CurIdx == !g_DelayTimer.IsTimerEnabled()){
     g_OBD.LcdPrint(0,1,g_sPlus);
-    g_OBD.LcdPrint(g_YesNoMenuItems[m_CurIdx]);
-  } else {
-    g_OBD.LcdPrint(0,1,g_YesNoMenuItems[m_CurIdx]);
+    offset++;
   }
+  g_OBD.LcdPrint(offset,1,g_YesNoMenuItems[m_CurIdx]);
 }
 Menu *DelayMenuEnableDisable::Select()
 {
   g_OBD.LcdPrint(0,1,g_sPlus);
-  g_OBD.LcdPrint(g_YesNoMenuItems[m_CurIdx]);
+  g_OBD.LcdPrint(1,1,g_YesNoMenuItems[m_CurIdx]);
   delay(500);
   if (m_CurIdx == 0) {
     g_DelayTimer.Enable();
@@ -1997,7 +2010,7 @@ Menu *TimeLimitMenu::Select()
 Menu *ResetMenu::Select()
 {
   g_OBD.LcdPrint(0,1,g_sPlus);
-  g_OBD.LcdPrint(g_YesNoMenuItems[m_CurIdx]);
+  g_OBD.LcdPrint(1,1,g_YesNoMenuItems[m_CurIdx]);
   delay(500);
   if (m_CurIdx == 0) {
     g_EvseController.Reboot();
