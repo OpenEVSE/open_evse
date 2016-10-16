@@ -690,8 +690,10 @@ public:
   }
   void LcdPrint_P(PGM_P s);
   void LcdPrint(int y,const char *s);
+  void LcdPrintLine(int y,const char *s);
   void LcdPrint_P(int y,PGM_P s);
   void LcdPrint(int x,int y,const char *s);
+  void LcdPrintLine(int x,int y,const char *s);
   void LcdPrint_P(int x,int y,PGM_P s);
   void LcdPrint(int i) { 
     m_Lcd.print(i); 
