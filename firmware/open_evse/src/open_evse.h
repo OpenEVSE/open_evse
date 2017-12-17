@@ -917,7 +917,8 @@ public:
 			if (tf) m_Flags |= TMF_OVERTEMPERATURE_SHUTDOWN;
 			else m_Flags &= ~TMF_OVERTEMPERATURE_SHUTDOWN;
 		}
-		int8_t OverTemperatureShutdown() { return (m_Flags & TMF_OVERTEMPERATURE_SHUTDOWN) ? 1 : 0; } #ifdef TEMPERATURE_MONITORING_NY
+		int8_t OverTemperatureShutdown() { return (m_Flags & TMF_OVERTEMPERATURE_SHUTDOWN) ? 1 : 0; }
+		#ifdef TEMPERATURE_MONITORING_NY
 			void LoadThresh();
 			void SaveThresh();
 		#endif //TEMPERATURE_MONITORING_NY
