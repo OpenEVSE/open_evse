@@ -21,6 +21,7 @@
  10/25/14      Craig K         add smoothing to the Amperage readout
  3/1/15        Craig K         add TEMPERATURE_MONITORING
  3/7/15        Craig K         add KWH_RECORDING
+ 12/17/17      Michael Kidd    Reformatted code for consistent code spacing and brace positioning
 
  * This file is part of Open EVSE.
 
