@@ -155,15 +155,6 @@ extern AutoCurrentCapacityController g_ACCController;
 // If the AC voltage is > 150,000 mV, then it's L2. Else, L1.
 #define L2_VOLTAGE_THRESHOLD (150000)
 #define VOLTMETER
-// 35 ms is just a bit longer than 1.5 cycles at 50 Hz
-#define VOLTMETER_POLL_INTERVAL (35)
-// This is just a wild guess
-// #define VOLTMETER_SCALE_FACTOR (266)     // original guess
-//#define DEFAULT_VOLT_SCALE_FACTOR (262)        // calibrated for Craig K OpenEVSE II build
-#define DEFAULT_VOLT_SCALE_FACTOR (298)        // calibrated for lincomatic's OEII
-// #define VOLTMETER_OFFSET_FACTOR (40000)  // original guess
-//#define DEFAULT_VOLT_OFFSET (46800)     // calibrated for Craig K OpenEVSE II build
-#define DEFAULT_VOLT_OFFSET (12018)     // calibrated for lincomatic's OEII
 #endif // OPENEVSE_2
 
 // GFI support
@@ -461,9 +452,24 @@ extern AutoCurrentCapacityController g_ACCController;
 #define PILOT_PIN 1 // analog pilot voltage reading pin ADCx
 #define PP_PIN 2 // PP_READ - ADC2
 #ifdef VOLTMETER
+// 35 ms is just a bit longer than 1.5 cycles at 50 Hz
+#define VOLTMETER_POLL_INTERVAL (35)
+#ifndef DEFAULT_VOLT_SCALE_FACTOR
+// This is just a wild guess
+// #define VOLTMETER_SCALE_FACTOR (266)     // original guess
+//#define DEFAULT_VOLT_SCALE_FACTOR (262)        // calibrated for Craig K OpenEVSE II build
+#define DEFAULT_VOLT_SCALE_FACTOR (298)        // calibrated for lincomatic's OEII
+#endif // DEFAULT_VOLT_SCALE_FACTOR
+#ifndef DEFAULT_VOLT_OFFSET
+// #define VOLTMETER_OFFSET_FACTOR (40000)  // original guess
+//#define DEFAULT_VOLT_OFFSET (46800)     // calibrated for Craig K OpenEVSE II build
+#define DEFAULT_VOLT_OFFSET (12018)     // calibrated for lincomatic's OEII
+#endif // DEFAULT_VOLT_OFFSET
+#ifndef VOLTMETER_PIN
 // N.B. Note, ADC2 is already used as PP_PIN so beware of potential clashes
 // voltmeter pin is ADC2 on OPENEVSE_2
 #define VOLTMETER_PIN 2 // analog AC Line voltage voltmeter pin ADCx
+#endif // VOLTMETER_PIN
 #endif // VOLTMETER
 #ifdef OPENEVSE_2
 // This pin must match the last write to CHARGING_PIN, modulo a delay. If
