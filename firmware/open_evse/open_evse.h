@@ -470,6 +470,14 @@ extern AutoCurrentCapacityController g_ACCController;
 // voltmeter pin is ADC2 on OPENEVSE_2
 #define VOLTMETER_PIN 2 // analog AC Line voltage voltmeter pin ADCx
 #endif // VOLTMETER_PIN
+// A shifted voltmeter scales the sine wave of input voltage down to ADC range and offsets it
+// upwards so that all the input is in positive range. A typical off the shelf unit will map
+// the zero input to half of VCC. This slightly changes the calculation compared to OPENEVSE_2.
+// Because we are operating with integers still, it might be useful to pick up a unit with gain
+// adjustment and only work with a scale factor of 1 or 2.
+#ifdef SHIFTED_VOLTMETER
+#define VOLTMETER_THRESHOLD (10)    // Values below this will be considered ADC noise TODO: this might be useful for other builds too
+#endif // SHIFTED_VOLTMETER
 #endif // VOLTMETER
 #ifdef OPENEVSE_2
 // This pin must match the last write to CHARGING_PIN, modulo a delay. If
