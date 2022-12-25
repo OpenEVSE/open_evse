@@ -2248,7 +2248,17 @@ uint32_t J1772EVSEController::ReadVoltmeter()
     unsigned int val = adcVoltMeter.read();
     if (val > peak) peak = val;
   }
+#ifdef SHIFTED_VOLTMETER
+  // Since the sine is shifted upwards, remove offset, then multiply
+  // Also take care if the peak is somehow below offset, this would produce large values
+  // due to unsigned variables being used, clamp it to zero
+  m_Voltage = peak > m_VoltOffset? ((uint32_t)peak - m_VoltOffset) * ((uint32_t)m_VoltScaleFactor) : 0;
+  // Clamp down the noise to zero too
+  if (m_Voltage <= VOLTMETER_THRESHOLD)
+      m_Voltage = 0;
+#else
   m_Voltage = ((uint32_t)peak) * ((uint32_t)m_VoltScaleFactor) + m_VoltOffset;
+#endif
   return m_Voltage;
 }
 #endif // VOLTMETER

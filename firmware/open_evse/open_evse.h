@@ -155,17 +155,9 @@ extern AutoCurrentCapacityController g_ACCController;
 // If the AC voltage is > 150,000 mV, then it's L2. Else, L1.
 #define L2_VOLTAGE_THRESHOLD (150000)
 #define VOLTMETER
-// 35 ms is just a bit longer than 1.5 cycles at 50 Hz
-#define VOLTMETER_POLL_INTERVAL (35)
-// This is just a wild guess
-// #define VOLTMETER_SCALE_FACTOR (266)     // original guess
-//#define DEFAULT_VOLT_SCALE_FACTOR (262)        // calibrated for Craig K OpenEVSE II build
-#define DEFAULT_VOLT_SCALE_FACTOR (298)        // calibrated for lincomatic's OEII
-// #define VOLTMETER_OFFSET_FACTOR (40000)  // original guess
-//#define DEFAULT_VOLT_OFFSET (46800)     // calibrated for Craig K OpenEVSE II build
-#define DEFAULT_VOLT_OFFSET (12018)     // calibrated for lincomatic's OEII
 #endif // OPENEVSE_2
 
+#ifndef NO_GFI
 // GFI support
 #define GFI
 
@@ -179,6 +171,7 @@ extern AutoCurrentCapacityController g_ACCController;
 // 2) if enabled, any a fault occurs immediately after charge is initiated,
 //    hard fault until power cycled. Otherwise, do the standard delay/retry sequence
 #define UL_COMPLIANT
+#endif // NO_GFI
 
 #ifdef UL_COMPLIANT
 #define ADVPWR
@@ -461,9 +454,32 @@ extern AutoCurrentCapacityController g_ACCController;
 #define PILOT_PIN 1 // analog pilot voltage reading pin ADCx
 #define PP_PIN 2 // PP_READ - ADC2
 #ifdef VOLTMETER
+// 35 ms is just a bit longer than 1.5 cycles at 50 Hz
+#define VOLTMETER_POLL_INTERVAL (35)
+#ifndef DEFAULT_VOLT_SCALE_FACTOR
+// This is just a wild guess
+// #define VOLTMETER_SCALE_FACTOR (266)     // original guess
+//#define DEFAULT_VOLT_SCALE_FACTOR (262)        // calibrated for Craig K OpenEVSE II build
+#define DEFAULT_VOLT_SCALE_FACTOR (298)        // calibrated for lincomatic's OEII
+#endif // DEFAULT_VOLT_SCALE_FACTOR
+#ifndef DEFAULT_VOLT_OFFSET
+// #define VOLTMETER_OFFSET_FACTOR (40000)  // original guess
+//#define DEFAULT_VOLT_OFFSET (46800)     // calibrated for Craig K OpenEVSE II build
+#define DEFAULT_VOLT_OFFSET (12018)     // calibrated for lincomatic's OEII
+#endif // DEFAULT_VOLT_OFFSET
+#ifndef VOLTMETER_PIN
 // N.B. Note, ADC2 is already used as PP_PIN so beware of potential clashes
 // voltmeter pin is ADC2 on OPENEVSE_2
 #define VOLTMETER_PIN 2 // analog AC Line voltage voltmeter pin ADCx
+#endif // VOLTMETER_PIN
+// A shifted voltmeter scales the sine wave of input voltage down to ADC range and offsets it
+// upwards so that all the input is in positive range. A typical off the shelf unit will map
+// the zero input to half of VCC. This slightly changes the calculation compared to OPENEVSE_2.
+// Because we are operating with integers still, it might be useful to pick up a unit with gain
+// adjustment and only work with a scale factor of 1 or 2.
+#ifdef SHIFTED_VOLTMETER
+#define VOLTMETER_THRESHOLD (10)    // Values below this will be considered ADC noise TODO: this might be useful for other builds too
+#endif // SHIFTED_VOLTMETER
 #endif // VOLTMETER
 #ifdef OPENEVSE_2
 // This pin must match the last write to CHARGING_PIN, modulo a delay. If
