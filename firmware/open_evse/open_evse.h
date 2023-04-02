@@ -229,6 +229,7 @@ extern AutoCurrentCapacityController g_ACCController;
 //Adafruit RGBLCD (MCP23017) - can have RGB or monochrome backlight
 #define RGBLCD
 
+#define LCD_BL_TIMEOUT 5000
 //select default LCD backlight mode. can be overridden w/CLI/RAPI
 #define BKL_TYPE_MONO 0
 #define BKL_TYPE_RGB  1
@@ -844,6 +845,7 @@ typedef union union4b {
 #define OBD_UPD_HARDFAULT 2 // update w/ hard fault
 class OnboardDisplay
 {
+
 #ifdef RED_LED_REG
   DigitalPin pinRedLed;
 #endif
@@ -865,6 +867,9 @@ class OnboardDisplay
 
   void MakeChar(uint8_t n, PGM_P bytes);
 public:
+
+  static unsigned long lastBacklightChangeMillis ;
+
   OnboardDisplay();
   void Init();
 
@@ -937,6 +942,11 @@ public:
 #endif // RGBLCD
   }
   void LcdSetBacklightColor(uint8_t c) {
+    static uint8_t lastColor = WHITE;
+    if (c != lastColor) {
+      lastBacklightChangeMillis = millis();
+      lastColor = c;
+    }
 #ifdef RGBLCD
     if (IsLcdBacklightMono()) {
       if (c) c = WHITE;

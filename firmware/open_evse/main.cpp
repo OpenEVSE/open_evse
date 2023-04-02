@@ -197,6 +197,10 @@ TempMonitor g_TempMonitor;
 AutoCurrentCapacityController g_ACCController;
 #endif
 
+unsigned long OnboardDisplay::lastBacklightChangeMillis = 0;
+
+
+
 //-- end global variables
 
 // watchdog-safe delay - use this when delay is longer than watchdog
@@ -414,7 +418,6 @@ void OnboardDisplay::MakeChar(uint8_t n, PGM_P bytes)
 void OnboardDisplay::Init()
 {
   WDT_RESET();
-
 #ifdef RGBLCD
   m_bFlags = 0;
 #else
@@ -985,6 +988,11 @@ void OnboardDisplay::Update(int8_t updmode)
       }
     }
 #endif // DELAYTIMER
+
+  if ( g_OBD.lastBacklightChangeMillis < millis() + LCD_BL_TIMEOUT) {
+    //turn backlight off after 5 secs
+      LcdSetBacklightColor(0);
+  }
 #endif // LCD16X2
   }
 
@@ -2492,7 +2500,7 @@ uint8_t StateTransitionReqFunc(uint8_t curPilotState,uint8_t newPilotState,uint8
 void setup()
 {
   wdt_disable();
-  
+
   delay(400);  // give I2C devices time to be ready before running code that wants to initialize I2C devices.  Otherwise a hang can occur upon powerup.
   
   Serial.begin(SERIAL_BAUD);
@@ -2541,7 +2549,9 @@ void loop()
 #endif // PERIODIC_LCD_REFRESH_MS
 
   ProcessInputs();
-  
+
+  //BackLightTimeout();
+
   // Delay Timer Handler - GoldServe
 #ifdef DELAYTIMER
   g_DelayTimer.CheckTime();
