@@ -535,6 +535,7 @@ int EvseRapiProcessor::processCmd()
         g_EvseController.Relay2Enable(0);
       }
     }
+    rc = 0;
     break;
 #endif //OEV6
 
