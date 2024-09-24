@@ -30,6 +30,7 @@ void gfi_isr()
 
 void Gfi::Init(uint8_t v6)
 {
+  is_v6 = v6;
   pin.init(GFI_REG,GFI_IDX,DigitalPin::INP);
   // GFI triggers on rising edge
   attachInterrupt(GFI_INTERRUPT,gfi_isr,RISING);
@@ -38,13 +39,26 @@ void Gfi::Init(uint8_t v6)
   volatile uint8_t *reg = GFITEST_REG;
   volatile uint8_t idx  = GFITEST_IDX;
 #ifdef OEV6
-  if (v6) {
+  if (is_v6) {
     reg = V6_GFITEST_REG;
-    idx  = V6_GFITEST_IDX;
+    idx = V6_GFITEST_IDX;
   }
 #endif // OEV6
   pinTest.init(reg,idx,DigitalPin::OUT);
-#endif
+#ifdef DC_GFI_TEST
+#ifdef OEV6
+  if (v6) {
+    pinMode(V6_DC_TEST_PIN,OUTPUT);
+  } else {
+#endif // OEV6
+    volatile uint8_t *dcreg = DC_TEST_REG;
+    volatile uint8_t dcidx  = DC_TEST_IDX;
+    pinDCTest.init(dcreg,dcidx,DigitalPin::OUT);
+#ifdef OEV6
+  }
+#endif // OEV6
+#endif //DC_GFI_TEST
+#endif //GFI_SELFTEST
 
   Reset();
 }
@@ -93,6 +107,49 @@ uint8_t Gfi::SelfTest()
     delay(50);
   }
   if (i == 40) return 3;
+
+#ifdef DC_GFI_TEST
+  if (testSuccess) {  //no point continuing unless AC test was successful
+    testSuccess = 0;
+    // turn on DC test pin
+#ifdef OEV6
+    if (is_v6) {
+#ifdef V6_DC_TEST_PIN
+      digitalWrite(V6_DC_TEST_PIN,HIGH);
+#endif
+    } else {
+#endif //OEV6
+    pinDCTest.write(1);
+#ifdef OEV6
+    }
+#endif //OEV6
+    for(int i=0; !testSuccess && (i < GFI_TEST_CYCLES); i++) {
+      //just wait this time...
+      delayMicroseconds(GFI_PULSE_ON_US);
+      delayMicroseconds(GFI_PULSE_OFF_US);
+    }
+    //turn off the DC test pin
+#ifdef OEV6
+    if (is_v6) {
+#ifdef V6_DC_TEST_PIN
+      digitalWrite(V6_DC_TEST_PIN,LOW);
+#endif
+    } else {
+#endif //OEV6
+    pinDCTest.write(0);
+#ifdef OEV6
+    }
+#endif //OEV6
+    // wait for GFI pin to clear
+    for (i=0;i < 40;i++) {
+      WDT_RESET();
+      if (!pin.read()) break;
+      delay(50);
+    }
+    if (i == 40) return 4;
+  }
+  //if testSuccess == 1 at this point then both tests were successful
+#endif //DC_GFI_TEST
 
 #ifndef OPENEVSE_2
   // sometimes getting spurious GFI faults when testing just before closing
