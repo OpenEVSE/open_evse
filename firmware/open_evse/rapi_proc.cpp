@@ -538,6 +538,20 @@ int EvseRapiProcessor::processCmd()
       }
       break;
 #endif // VOLTMETER
+
+#ifdef OEV6
+  case 'R':   //Relay2 enable
+    if (tokenCnt == 2) {
+      if ( (uint8_t)dtou32(tokens[1]) == 1 ) {
+        g_EvseController.Relay2Enable(1);
+      } else {
+        g_EvseController.Relay2Enable(0);
+      }
+    }
+    rc = 0;
+    break;
+#endif //OEV6
+
 #ifdef DELAYTIMER     
     case 'T': // timer
       if (tokenCnt == 5) {
