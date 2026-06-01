@@ -39,6 +39,19 @@
 #include "avrstuff.h"
 #include "i2caddr.h"
 
+/* Replace  command `avrdude -c USBasp -p m328p -U lfuse:w:0xFF:m -U hfuse:w:0xDF:m -U efuse:w:0x05:m`
+ from flash.bat. This allow us to flash the ATMega 328 using tools like Pickit 4 */
+
+#include <avr/io.h>
+
+FUSES = {
+	.low = 0xFF, // LOW {SUT_CKSEL=EXTXOSC_8MHZ_XX_16KCK_14CK_65MS, CKOUT=CLEAR, CKDIV8=CLEAR}
+	.high = 0xDF, // HIGH {BOOTRST=CLEAR, BOOTSZ=256W_3F00, EESAVE=CLEAR, WDTON=CLEAR, SPIEN=SET, DWEN=CLEAR, RSTDISBL=CLEAR}
+	.extended = 0x05, // EXTENDED {BODLEVEL=2V7}
+};
+
+LOCKBITS = 0xFF; // {LB=NO_LOCK, BLB0=NO_LOCK, BLB1=NO_LOCK}
+
 #if defined(ARDUINO) && (ARDUINO >= 100)
 #include "Arduino.h"
 #else
