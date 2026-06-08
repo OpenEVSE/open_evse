@@ -1381,6 +1381,16 @@ void J1772EVSEController::Update(uint8_t forcetransition)
           }
           SetAutoSvcLvlSkipped(0);
         }
+#ifdef AUTOSVCLEVEL
+        // if EV was plugged in during POST, we couldn't do AutoSvcLevel detection,
+        // so we had to hardcode L1. During first charge session, we can probe and set to L2 if necessary
+        if (AutoSvcLvlSkipped() && (m_EvseState == EVSE_STATE_C)) {
+          if (!acpinstate) {
+            // set to L2
+            SetSvcLevel(2,1);
+          }
+          SetAutoSvcLvlSkipped(0);
+        }
 #endif // AUTOSVCLEVEL
       }
     }
