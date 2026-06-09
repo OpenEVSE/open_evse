@@ -25,6 +25,7 @@
 class Gfi {
   DigitalPin pin;
   uint8_t m_GfiFault;
+  uint8_t is_v6;
 #ifdef GFI_SELFTEST
   uint8_t testSuccess;
   uint8_t testInProgress;
@@ -32,7 +33,10 @@ class Gfi {
 public:
 #ifdef GFI_SELFTEST
   DigitalPin pinTest;
-#endif
+#ifdef DC_GFI_TEST
+  DigitalPin pinDCTest;
+#endif  //DC_GFI_TEST
+#endif  //GFI_SELFTEST
 
   Gfi() {}
 

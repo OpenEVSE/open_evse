@@ -175,6 +175,9 @@ extern AutoCurrentCapacityController g_ACCController;
 // If you loop a wire from the third GFI pin through the CT a few times and then to ground,
 // enable this. ADVPWR must also be defined.
 #define GFI_SELFTEST
+// If you loop a single turn of wire from the 12V supply through a 2k resistor to the
+// second DC relay pin, enable this for DC fault test
+//#define DC_GFI_TEST
 
 // behavior specified by UL
 // 1) if enabled, POST failure will cause a hard fault until power cycled.
@@ -487,15 +490,23 @@ extern AutoCurrentCapacityController g_ACCController;
 #define ACLINE2_REG &PIND
 #define ACLINE2_IDX 4
 
-#define V6_CHARGING_PIN  5
-#define V6_CHARGING_PIN2 6
-
 // digital Relay trigger pin
+#define V6_CHARGING_PIN  5
 #define CHARGING_REG &PINB
 #define CHARGING_IDX 0
+
+#ifdef DC_GFI_TEST
+// 6ma DC leakage test when this pin is high
+#define V6_DC_TEST_PIN 6
+#define DC_TEST_REG &PIND
+#define DC_TEST_IDX 7
+#else
 // digital Relay trigger pin for second relay
+#define V6_CHARGING_PIN2 6
 #define CHARGING2_REG &PIND
 #define CHARGING2_IDX 7
+#endif //DC_GFI_TEST
+
 //digital Charging pin for AC relay
 #define CHARGINGAC_REG &PINB
 #define CHARGINGAC_IDX 1
