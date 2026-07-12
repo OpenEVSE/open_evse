@@ -5,6 +5,8 @@ on:
   push:
     branches:
       - linco-work
+      - master
+      - dev
   pull_request:
 
 jobs:
