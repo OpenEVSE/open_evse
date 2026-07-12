@@ -4,7 +4,6 @@ on:
   workflow_dispatch:
   push:
     branches:
-      - linco-work
       - master
       - dev
   pull_request:
@@ -20,13 +19,13 @@ jobs:
 
   build_platform_io:
     name: Build using PlatformIO
-    uses: OpenEVSE/open_evse/.github/workflows/build_platformio.yml@linco-work
+    uses: ./.github/workflows/build_platformio.yml
 
   release:
     name: Create pre-release
 
     needs:
       - build_platform_io
-    if: github.ref == 'refs/heads/linco-work'
+    if: github.ref == 'refs/heads/dev'
 
-    uses: OpenEVSE/open_evse/.github/workflows/release.yml@linco-work
+    uses: ./.github/workflows/release.yml
