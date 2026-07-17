@@ -3,7 +3,7 @@
 ExternalEEPROM g_eeprom;
 
 //                                               A/B  B/C  C/D  D DS
-THRESH_DATA J1772EVSEController::m_ThreshData = {3948,3539,3258,0,492};
+THRESH_DATA J1772EVSEController::m_ThreshData = {3932,3517,3225,0,492};
 
 #ifdef MCU_ID_LEN
 // mcuid *must* be of size MCU_ID_LEN
