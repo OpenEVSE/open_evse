@@ -1423,7 +1423,9 @@ void J1772EVSEController::ReadPilot(uint16_t *plow,uint16_t *phigh)
       pl = reading;
     }
   }
-  //  RAPI_SERIAL_PORT.print("pilotread ");RAPI_SERIAL_PORT.println(millis()-sms);
+  //   RAPI_SERIAL_PORT.print("pilotread ");RAPI_SERIAL_PORT.println(millis()-sms);
+  //    sprintf(g_sTmp,"p %d %d",pl,ph);
+  //    RAPI_SERIAL_PORT.println(g_sTmp);
 
   if (m_Pilot.GetState() != PILOT_STATE_N12) {
     // update prev state
@@ -2224,7 +2226,8 @@ void J1772EVSEController::Calibrate(PCALIB_DATA pcd)
 
     delay(250); // wait for stabilization
 
-    // 1x = 114us 20x = 2.3ms 100x = 11.3ms
+    // m328p: 1x = 114us 20x = 2.3ms 100x = 11.3ms
+    // samd: 825x = ~12-13ms
     int i;
     for (i=0;i < 1000;i++) {
       reading = adcPilot.read();  // measures pilot voltage
