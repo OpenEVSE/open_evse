@@ -13,8 +13,9 @@
 
 
 // for J1772.ReadPilot()
-// 15 = ~13ms
-#define PILOT_LOOP_CNT 15
+// analogRead() 15 = ~13ms too slow!!!
+// adcPin::read() 825 ~ 12-13ms
+#define PILOT_LOOP_CNT 825
 
 
 #define GetVerStr(s) strcpy(s,VERSION)
@@ -76,7 +77,10 @@ void init(uint32_t pinnum,int idxjunk,PinMode mode);
 };
 
 class AdcPin {
+  static bool _adcInitDone;
   uint32_t _pinNum;
+
+  void  _adcInit();
 public:
 
   AdcPin() {}
@@ -86,18 +90,15 @@ public:
 
   void init(uint32_t pinnum) {
     _pinNum = pinnum;
-    analogReadResolution(ADC_RESOLUTION_BITS);
   }
 
-  uint32_t read() {
-    // NB pin-number remap trap: the SAMD Arduino core's analogRead() does
-    // `if (pin < A0) pin += A0;` (wiring_analog.c), so an AdcPin built with a
-    // low digital pin number silently samples a *different*, A0-offset pin.
-    // Safe here only because every AdcPin instance uses A0..A5 (>= A0):
-    // PILOT_SENSE_PIN, CURRENT_PIN, PP_PIN.  The GMI zero-cross line on PA09
-    // (pin 3) cannot use analogRead() at all — see gmiAdc*() below.
-    return analogRead(_pinNum);
-  }
+  // NB pin-number remap trap: the SAMD Arduino core's analogRead() does
+  // `if (pin < A0) pin += A0;` (wiring_analog.c), so an AdcPin built with a
+  // low digital pin number silently samples a *different*, A0-offset pin.
+  // Safe here only because every AdcPin instance uses A0..A5 (>= A0):
+  // PILOT_SENSE_PIN, CURRENT_PIN, PP_PIN.  The GMI zero-cross line on PA09
+  // (pin 3) cannot use analogRead() at all — see gmiAdc*() below.
+  uint32_t read();
 };
 
 #ifdef RELAY_ZC_SWITCH
