@@ -126,6 +126,10 @@ void gmiAdcEnd()
 void DigitalPin::init(uint32_t pinnum,int idxjunk,PinMode mode)
 {
   _pinNum = pinnum;
+
+  const PinDescription *pinDesc = &g_APinDescription[pinnum];
+  _port = pinDesc->ulPort;
+  _mask = (1ul << pinDesc->ulPin);
   if (mode == INP) {
     _pinMode = INPUT;
   }
@@ -135,6 +139,7 @@ void DigitalPin::init(uint32_t pinnum,int idxjunk,PinMode mode)
   else {
     _pinMode = OUTPUT;
   }
+
   pinMode(_pinNum,_pinMode);
 }
 

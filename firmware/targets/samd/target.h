@@ -56,6 +56,8 @@ inline void wdt_reset()
 class DigitalPin {
   uint32_t _pinNum;
   uint32_t _pinMode;
+  uint32_t _port;
+  uint32_t _mask;
   
 public:
   enum PinMode { INP,INP_PU,OUT };
@@ -65,14 +67,20 @@ public:
     init(pinnum,idxjunk,mode);
   }
 
-void init(uint32_t pinnum,int idxjunk,PinMode mode);
-  void mode(PinMode mode);
+  void init(uint32_t pinnum,int idxjunk,PinMode mode);
 
   uint8_t read() {
-    return digitalRead(_pinNum) ? 1 : 0;
+    return (PORT->Group[_port].IN.reg & _mask) != 0;
   }
   void write(uint32_t state) {
-    digitalWrite(_pinNum,state ? HIGH : LOW);
+    if (_pinMode != OUTPUT) {
+      return;
+    }
+
+    if (state)
+        PORT->Group[_port].OUTSET.reg = _mask;
+    else
+        PORT->Group[_port].OUTCLR.reg = _mask;
   }
 };
 

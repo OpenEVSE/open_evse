@@ -1,6 +1,15 @@
 Change Log
 
+20260722 SCL
+- SAMD:
+  - GFI self test was failing sometimes -> replace self test tickling loop with PWM (tone())
+  - get rid of slow digitalRead()/digitalWrite() and replace w/ bare metal code in DigitalPin::read()/write()
 
+20260716 SCL
+- SAMD:
+  - adjust pilot thresholds
+  - analogRead() was undersampling pilot -> replace with fast direct ADC code
+	
 20260528-29 SCL vD9.0.1
 - m328p: since A6 is floating in v1-5, read it 5x and use its statistical mode
 	when detecting board type
