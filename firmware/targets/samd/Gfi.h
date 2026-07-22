@@ -28,11 +28,10 @@ class Gfi {
 #ifdef GFI_SELFTEST
   volatile uint8_t testSuccess;
   uint8_t testInProgress;
+  void gfiPWM60Hz(uint8_t pin,unsigned long waitms);
 #endif // GFI_SELFTEST
+
 public:
-#ifdef GFI_SELFTEST
-  DigitalPin pinTest;
-#endif
 
   Gfi() {}
 

@@ -29,19 +29,14 @@ void gfi_isr()
 #endif
 }
 
+#include <Arduino.h>
+
 
 void Gfi::Init(uint8_t v6)
 {
   pin.init(GFI_REG,GFI_IDX,DigitalPin::INP);
   // GFI triggers on rising edge
   attachInterrupt(digitalPinToInterrupt(GFI_REG),gfi_isr,RISING);
-
-#ifdef GFI_SELFTEST
-  uint32_t reg = GFITEST_REG;
-  uint32_t idx  = GFITEST_IDX;
-
-  pinTest.init(reg,idx,DigitalPin::OUT);
-#endif // GFI_SELFTEST
 
   Reset();
 }
@@ -62,14 +57,13 @@ void Gfi::Reset()
 }
 
 #ifdef GFI_SELFTEST
-
 uint8_t Gfi::SelfTest()
 {
 #ifdef BYPASS_GFI
   return 0;
 #endif
-  //  RAPI_SERIAL_PORT.print("GST ");
-  //  uint32_t sms = millis();
+  //    RAPI_SERIAL_PORT.print("GST ");
+  //    uint32_t sms = millis();
   int i;
   // wait for GFI pin to clear
   for (i=0;i < 20;i++) {
@@ -78,20 +72,27 @@ uint8_t Gfi::SelfTest()
     delay(50);
   }
   if (i == 20) return 2;
-  //  RAPI_SERIAL_PORT.print(millis()-sms);
+  //    RAPI_SERIAL_PORT.print(millis()-sms);
 
   testInProgress = 1;
   testSuccess = 0;
+
   WDT_RESET();
-  for(i=0; !testSuccess && (i < 200); i++) {
-    pinTest.write(1);
-    delayMicroseconds(GFI_PULSE_ON_US);
-    pinTest.write(0);
-    delayMicroseconds(GFI_PULSE_OFF_US);
-    if ((i % 50) == 0) WDT_RESET();
+  unsigned long waitms = GFI_TEST_CYCLES/60*1000ul;
+  tone(GFITEST_REG,60,waitms);
+
+  unsigned long curms,startms = millis();
+  unsigned long dogms = startms;
+  while (((curms=millis())-startms) < waitms) {
+    if (testSuccess) break;
+    else if ((curms-dogms) >= (WATCHDOG_TIMEOUT_SEC*500ul)) {
+      WDT_RESET();
+      dogms = curms;
+    }
   }
+
   //  RAPI_SERIAL_PORT.print(" ST ");RAPI_SERIAL_PORT.print(millis()-sms);
-  //  RAPI_SERIAL_PORT.print(" ");RAPI_SERIAL_PORT.print(i);
+  //  RAPI_SERIAL_PORT.print("tss ");RAPI_SERIAL_PORT.print(testSuccess);
 
   // wait for GFI pin to clear
   for (i=0;i < 40;i++) {
