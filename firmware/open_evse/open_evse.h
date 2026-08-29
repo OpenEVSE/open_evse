@@ -370,6 +370,68 @@ extern AutoCurrentCapacityController g_ACCController;
 #define RELAY_TRANSIT_TIMEOUT_MS  300
 #endif // RELAY_ZC_SWITCH
 
+// RELAY_HEALTH - relay contact-life estimation, built on the RELAY_ZC_SWITCH
+// diagnostics above (hot/cold open classification, last-open current, and
+// coil transit timing) plus TEMPERATURE_MONITORING if available. Cumulative-
+// damage (Miner's rule) model - see RelayHealth.h for the derivation and
+// RAPI $GL/$FH for how it's surfaced/reset. Diagnostic only: never gates or
+// alters charging logic.
+#if defined(RELAY_ZC_SWITCH) && defined(AMMETER)
+#define RELAY_HEALTH
+#endif
+
+#ifdef RELAY_HEALTH
+// N_e: relay datasheet electrical life (cycles) at rated current I_r.
+// ADJUST to match your relay's datasheet - this default is a conservative
+// guess for a general-purpose 30A automotive-style contactor.
+#define RELAY_RATED_ELECTRICAL_LIFE_CYCLES 100000UL
+// N_m: relay datasheet mechanical life (cycles, no load). ADJUST to match
+// your relay's datasheet.
+#define RELAY_RATED_MECHANICAL_LIFE_CYCLES 10000000UL
+// I_r: relay datasheet rated current, amps. ADJUST to match your relay.
+#define RELAY_RATED_CURRENT_A 30
+// alpha_pf: load-character penalty applied to every hot switch. EV chargers
+// present a mildly non-resistive load (PFC front end) to the AC line - 1.20
+// is a modest default; raise it if field/datasheet data suggests otherwise.
+#define RELAY_HEALTH_LOAD_ALPHA_X100 120
+// alpha_T: temperature penalty, applied above this ambient knee (0.1C units,
+// read from the MCP9808 ambient sensor). No penalty at/below the knee.
+#define RELAY_HEALTH_TEMP_KNEE_C10 400 // 40.0C
+// +this (x100 scale) per 0.1C above the knee, e.g. 5 => +5x per 10C over
+#define RELAY_HEALTH_TEMP_SLOPE_X100_PER_C10 5
+#define RELAY_HEALTH_TEMP_ALPHA_MAX_X100 300 // cap alpha_T at 3.0x
+
+// coil drop-out (open) transit-time drift - early weld-onset warning
+// # of post-boot transit-time samples averaged to establish the baseline
+#define RELAY_HEALTH_TRANSIT_BASELINE_SAMPLES 8
+// live/baseline ratio (x100) at/above which TransitDriftWarning() trips
+#define RELAY_HEALTH_TRANSIT_WARN_RATIO_X100 150 // 1.5x
+
+// EEPROM wear mitigation: cold opens happen on every normal charging
+// session, unlike the rare hot-switch/fault events, so only persist the
+// cumulative count every N increments (losing up to N-1 counts across a
+// power loss is immaterial - see RelayHealth.h, the mechanical budget this
+// feeds is normally negligible relative to any realistic cycle count anyway)
+#define RELAY_HEALTH_COLD_CNT_EEPROM_BATCH 32
+
+// thermal index (deltaT / I^2, proportional to contact resistance) - only
+// meaningful with TEMPERATURE_MONITORING (MCP9808 ambient sensor)
+#ifdef TEMPERATURE_MONITORING
+// how often (ms) to take a fresh deltaT/I^2 sample while charging
+#define RELAY_HEALTH_THERMAL_WINDOW_MS (600000UL) // 10 min
+// minimum charging current (mA) required to take a sample - below this,
+// I^2 is too small for deltaT/I^2 to be anything but noise
+#define RELAY_HEALTH_THERMAL_MIN_CURRENT_MA 6000UL
+// # of early in-session samples averaged to establish the self-baseline H0
+#define RELAY_HEALTH_THERMAL_BASELINE_SAMPLES 4
+// live/self-baseline ratio (x100) thresholds
+#define RELAY_HEALTH_THERMAL_WATCH_RATIO_X100 150 // 1.5x
+#define RELAY_HEALTH_THERMAL_WARN_RATIO_X100  200 // 2.0x
+#endif // TEMPERATURE_MONITORING
+
+#include "RelayHealth.h"
+#endif // RELAY_HEALTH
+
 // OEV6 w/ CGMI - when power is loss, temporarily triggers NO GROUND fault
 // delay recording of NO GROUND fault to avoid recording this spurious fault
 #ifndef NO_GND_RECORD_DELAY
@@ -557,6 +619,14 @@ extern AutoCurrentCapacityController g_ACCController;
 // RELAY_ZC_SWITCH relay-life diagnostics
 #define EOFS_CURRENT_ZERO_THRESHOLD_MA 40 // 2 bytes - configurable relay-open current-zero threshold (mA); 0xffff = unformatted, use CURRENT_ZERO_THRESHOLD_MA default
 #define EOFS_RELAY_HOTSWITCH_CNT       42 // 2 bytes - cumulative count of relay opens where current never reached the zero threshold; 0xffff = unformatted, treat as 0
+
+// RELAY_HEALTH relay contact-life estimation (see RelayHealth.h)
+#define EOFS_RELAY_ELEC_DAMAGE_X1E6      44 // 4 bytes - Miner's-rule electrical-damage accumulator (millionths of rated electrical life consumed); 0xffffffff = unformatted, treat as 0
+#define EOFS_RELAY_COLD_OPEN_CNT         48 // 2 bytes - cumulative cold (non-arced) relay-open count; 0xffff = unformatted, treat as 0
+#define EOFS_RELAY_TRANSIT_BASELINE_MS   50 // 2 bytes - learned open-transit-time baseline (ms)
+#define EOFS_RELAY_TRANSIT_BASELINE_N    52 // 1 byte  - # samples averaged into the transit baseline so far
+#define EOFS_RELAY_THERMAL_BASELINE_X100 53 // 2 bytes - self-learned thermal-index baseline H0 (deltaT/I^2 x100)
+#define EOFS_RELAY_THERMAL_BASELINE_N    55 // 1 byte  - # samples averaged into the thermal baseline so far
 
 #define EOFS_MAX_HW_CURRENT_CAPACITY 511 // 1 byte
 

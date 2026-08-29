@@ -121,6 +121,11 @@ FD - disable EVSE
  $FD*AE
 FE - enable EVSE
  $FE*AF
+FH - reset relay Health/life estimate (requires RELAY_HEALTH)
+ clears the relay-life cumulative-damage accumulator and the transit-time/
+ thermal-index self-learned baselines - use after replacing the contactor,
+ so the estimate doesn't carry over wear from the old relay.
+ $FH*xx
 FO set Overtemperature threshold
  $FO panicthresh
  panicthresh in 10ths of a degree Celsius
@@ -416,6 +421,36 @@ GW - get relay Wear/life diagnostics (requires RELAY_ZC_SWITCH)
    300 (RELAY_TRANSIT_TIMEOUT_MS) = timed out/not confirmed, or not
    measurable on this hardware (requires CGMI)
  $GW^39
+
+GL - get relay Life/health estimate (requires RELAY_HEALTH; needs RELAY_ZC_SWITCH + AMMETER)
+ response: $OK pctremain coldopencnt elecdamagex1e6 transitbaselinems transitdrift thermalx100 thermalbaselinex100 thermalwarn
+ Cumulative-damage (Miner's rule) contact-life estimate built on the $GW
+ diagnostics, plus (if TEMPERATURE_MONITORING) a self-baselined thermal
+ index. Diagnostic only - never gates charging logic. See RelayHealth.h for
+ the full derivation. Reset via $FH (e.g. after relay replacement).
+ pctremain(decimal, 0-100): estimated relay life remaining. Combines an
+   electrical-damage accumulator (hot opens, weighted by
+   (I/I_rated)^2 * load-character * temperature multipliers) with a
+   mechanical-damage term (cold opens / rated mechanical life) - in a
+   well-behaved installation the electrical term dominates and is driven
+   almost entirely by fault-interrupt/e-stop events, not normal sessions.
+ coldopencnt(decimal): cumulative cold (non-arced) relay-open count.
+ elecdamagex1e6(decimal): raw electrical-damage accumulator, in millionths
+   of rated electrical life consumed (1000000 = 100%). Debug/trend field.
+ transitbaselinems(decimal): self-learned baseline open (drop-out) transit
+   time, in ms. 65535 = baseline not yet established (needs 8 post-reset
+   measurements; requires CGMI hardware, see $GW).
+ transitdrift(0|1): 1 if the most recent open-transit time is >=1.5x the
+   baseline - an early symptom of contact welding, ahead of the hard
+   EVSE_STATE_STUCK_RELAY check.
+ thermalx100(decimal): most recent deltaT/I^2 sample (x100), proportional to
+   contact resistance. 65535 = not available (no TEMPERATURE_MONITORING, no
+   session yet, or current below the 6A sampling floor).
+ thermalbaselinex100(decimal): self-learned baseline H0 (x100). 65535 = not
+   yet established (needs 4 in-session samples) or not available.
+ thermalwarn(decimal): 0=ok/not available 1=watch (>=1.5x baseline)
+   2=warn (>=2x baseline).
+ $GL^3a
 
 Z0 FOR TESTING RELAY_AUTO_PWM_PIN ONLY
 Z0 closems holdpwm

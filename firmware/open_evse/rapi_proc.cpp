@@ -309,6 +309,12 @@ int EvseRapiProcessor::processCmd()
       g_EvseController.Enable();
       rc = 0;
       break;
+#ifdef RELAY_HEALTH
+    case 'H': // reset relay Health/life estimate (e.g. after relay replacement)
+      g_RelayHealth.ResetLifeEstimate();
+      rc = 0;
+      break;
+#endif // RELAY_HEALTH
     case 'F': // enable/disable feature
       if (tokenCnt == 3) {
 	u1.u8 = (uint8_t)(*tokens[2] - '0');
@@ -906,6 +912,21 @@ int EvseRapiProcessor::processCmd()
       rc = 0;
       break;
 #endif // RELAY_ZC_SWITCH
+#ifdef RELAY_HEALTH
+    case 'L': // get relay Life/health estimate
+      sprintf(buffer,"%u %u %lu %u %u %u %u %u",
+              g_RelayHealth.GetLifeRemainingPct(),
+              g_RelayHealth.GetColdOpenCnt(),
+              (unsigned long)g_RelayHealth.GetElecDamageX1e6(),
+              g_RelayHealth.GetTransitBaselineMs(),
+              g_RelayHealth.TransitDriftWarning(),
+              g_RelayHealth.GetThermalIndexX100(),
+              g_RelayHealth.GetThermalBaselineX100(),
+              g_RelayHealth.ThermalWarningLevel());
+      bufCnt = 1;
+      rc = 0;
+      break;
+#endif // RELAY_HEALTH
 
     case 'R': // get relay enable status  $GR
       sprintf(buffer,"%d %d %d",

@@ -2414,6 +2414,9 @@ void ProcessInputs()
   WDT_RESET();
   g_TempMonitor.Read();  //   update temperatures once per second
 #endif
+#ifdef RELAY_HEALTH
+  g_RelayHealth.Update();
+#endif
 }
 
 
@@ -2430,6 +2433,10 @@ void EvseReset()
 
 #ifdef TEMPERATURE_MONITORING
   g_TempMonitor.Init();
+#endif
+
+#ifdef RELAY_HEALTH
+  g_RelayHealth.Init();
 #endif
 
   g_EvseController.Init();

@@ -506,6 +506,9 @@ void J1772EVSEController::chargingOn()
 #ifdef RELAY_ZC_SWITCH
   m_RelayCloseTransitMs = waitRelayTransit(relayCmdMs,1);
 #endif
+#ifdef RELAY_HEALTH
+  g_RelayHealth.OnRelayClose();
+#endif
 
   setVFlags(ECVF_CHARGING_ON);
   
@@ -525,10 +528,12 @@ void J1772EVSEController::chargingOff(uint8_t emergency)
 {
 #ifdef RELAY_ZC_SWITCH
   uint8_t wasOn = chargingIsOn();
+  uint8_t hotOpen = 0;
   if (wasOn) {
     if (!emergency && RelayZCSwitchEnabled()) {
 #ifdef AMMETER
-      if (waitCurrentZero() && (m_RelayHotSwitchCnt < 0xfffe)) {
+      hotOpen = waitCurrentZero();
+      if (hotOpen && (m_RelayHotSwitchCnt < 0xfffe)) {
         eeprom_write_word((uint16_t*)EOFS_RELAY_HOTSWITCH_CNT,++m_RelayHotSwitchCnt);
       }
 #endif // AMMETER
@@ -536,6 +541,7 @@ void J1772EVSEController::chargingOff(uint8_t emergency)
     }
     else {
       // emergency open, or ZC switching disabled: always a hot break
+      hotOpen = 1;
 #ifdef AMMETER
       readAmmeter();
       m_LastRelayOpenCurrentMa = (int32_t)m_AmmeterReading * m_CurrentScaleFactor - m_AmmeterCurrentOffset;
@@ -576,6 +582,9 @@ void J1772EVSEController::chargingOff(uint8_t emergency)
 #ifdef RELAY_ZC_SWITCH
   if (wasOn) {
     m_RelayOpenTransitMs = waitRelayTransit(relayCmdMs,0);
+#ifdef RELAY_HEALTH
+    g_RelayHealth.OnRelayOpen(hotOpen,m_LastRelayOpenCurrentMa,m_RelayOpenTransitMs);
+#endif
   }
 #endif
 
