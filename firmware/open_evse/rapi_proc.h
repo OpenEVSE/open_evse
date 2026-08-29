@@ -244,6 +244,15 @@ SR n 0|1 - enable/disable relay output (saved to EEPROM, applied at boot)
  $SR 3 0 - disable AC relay
  $SR 1 1 - re-enable DC relay 1
 
+SZ ma - set relay-open current-zero threshold (requires RELAY_ZC_SWITCH)
+ ma(decimal): current, in mA, below which the relay is considered safe to
+   open at a current zero. Some units never read below the compiled-in
+   default (200 mA) due to ammeter offset/noise floor, which stalls every
+   non-emergency relay open for the full internal timeout (1s) - use this to
+   retune without a firmware rebuild.
+ range: 0-5000 (clamped). saved to EEPROM, applied immediately and at boot.
+ $SZ 300 - relay is considered safe to open below 300 mA
+
 G0 - get EV connect state
  response: $OK connectstate
  connectstate: 0=not connected, 1=connected, 2=unknown
@@ -383,14 +392,30 @@ GY - Get Hearbeat Supervision Status
  1 - There was a missed pulse once, but it has since been acknkoledged. Ampacity has been successfully restored to max permitted
  See SY above for worked expamples.
 
-GZ - get AC line frequency (requires RELAY_ZC_SWITCH)
- response: $OK freqx100
+GZ - get AC line frequency + relay-open current-zero threshold (requires RELAY_ZC_SWITCH)
+ response: $OK freqx100 zerothreshma
  freqx100(decimal): measured AC frequency * 100, e.g. 6012 = 60.12 Hz
  0 = frequency not yet measured (no relay operation has occurred since boot)
  CGMI hardware: updated on relay close (zcWaitRelayClose) and open (zcWaitRelayOpen)
  non-CGMI hardware: updated on relay open only (zcWaitRelayOpen); AC pins are
    load-side on older non-V6 boards so no valid signal is available at relay close
+ zerothreshma(decimal): current RAPI $SZ-configured current-zero threshold, in mA
  $GZ^38
+
+GW - get relay Wear/life diagnostics (requires RELAY_ZC_SWITCH)
+ response: $OK hotswitchcnt lastopenma closetransitms opentransitms
+ hotswitchcnt(decimal): cumulative count of relay opens where current never
+   reached the zero threshold before opening (i.e. an arced/"hot" break -
+   includes emergency opens and opens while zero-cross switching is
+   disabled via $FF Z 0). Saturates at 65534; persisted across reboots.
+ lastopenma(decimal): ammeter reading, in mA, immediately before the most
+   recent relay open. For relay-life estimation/trending.
+ closetransitms(decimal): elapsed ms from the close command to the load-side
+   AC-sense pin confirming the relay physically closed, from the most recent
+   close. opentransitms: same, for the most recent open.
+   300 (RELAY_TRANSIT_TIMEOUT_MS) = timed out/not confirmed, or not
+   measurable on this hardware (requires CGMI)
+ $GW^39
 
 Z0 FOR TESTING RELAY_AUTO_PWM_PIN ONLY
 Z0 closems holdpwm

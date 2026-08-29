@@ -656,6 +656,15 @@ int EvseRapiProcessor::processCmd()
       }
       break;
 
+#ifdef RELAY_ZC_SWITCH
+    case 'Z': // set relay-open current zero threshold (mA)  $SZ ma
+      if (tokenCnt == 2) {
+        g_EvseController.SetCurrentZeroThresholdMa((uint16_t)dtoi32(tokens[1]));
+        rc = 0;
+      }
+      break;
+#endif // RELAY_ZC_SWITCH
+
     }
     break;
 
@@ -881,8 +890,18 @@ int EvseRapiProcessor::processCmd()
       break;
 #endif //HEARTBEAT_SUPERVISION
 #ifdef RELAY_ZC_SWITCH
-    case 'Z': // get AC frequency
-      sprintf(buffer,"%u", g_EvseController.GetAcFreqX100());
+    case 'Z': // get AC frequency + relay-open current zero threshold
+      sprintf(buffer,"%u %u", g_EvseController.GetAcFreqX100(),
+              g_EvseController.GetCurrentZeroThresholdMa());
+      bufCnt = 1;
+      rc = 0;
+      break;
+    case 'W': // get relay Wear/life diagnostics
+      sprintf(buffer,"%u %ld %u %u",
+              g_EvseController.GetRelayHotSwitchCnt(),
+              (long)g_EvseController.GetLastRelayOpenCurrentMa(),
+              g_EvseController.GetRelayCloseTransitMs(),
+              g_EvseController.GetRelayOpenTransitMs());
       bufCnt = 1;
       rc = 0;
       break;

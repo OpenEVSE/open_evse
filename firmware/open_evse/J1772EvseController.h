@@ -192,6 +192,11 @@ class J1772EVSEController {
   uint8_t m_relayFlags; // ERELAYF_xxx - relay enable/disable bitmask
 #ifdef RELAY_ZC_SWITCH
   uint16_t m_AcFreqX100; // measured AC frequency × 100 (e.g. 6012 = 60.12 Hz); 0 = not yet measured
+  uint16_t m_CurrentZeroThresholdMa; // configurable via RAPI $SZ; mA below which the relay is opened at a current zero
+  uint16_t m_RelayHotSwitchCnt; // cumulative count of relay opens where current never reached the zero threshold (arced/hot open)
+  int32_t  m_LastRelayOpenCurrentMa; // ammeter reading immediately before the last relay open, for relay-life estimation
+  uint16_t m_RelayCloseTransitMs; // last measured command-to-physically-closed time (RELAY_TRANSIT_TIMEOUT_MS if unmeasured/timed out)
+  uint16_t m_RelayOpenTransitMs;  // last measured command-to-physically-open time (RELAY_TRANSIT_TIMEOUT_MS if unmeasured/timed out)
 #endif
   uint16_t m_wFlags; // ECF_xxx
   uint16_t m_wVFlags; // ECVF_xxx
@@ -269,8 +274,9 @@ class J1772EVSEController {
   void zcWaitRelay(uint8_t advanceMs);
   void zcWaitRelayClose();
   void zcWaitRelayOpen();
-  void waitCurrentZero();
+  uint8_t waitCurrentZero(); // returns 1 if current never reached the zero threshold (hot open)
   uint32_t measureAcFreq(unsigned long *zcTimeMsOut);
+  uint16_t waitRelayTransit(unsigned long cmdStartMs, uint8_t wantClosed);
 #endif
   uint8_t chargingIsOn() { return vFlagIsSet(ECVF_CHARGING_ON); }
 
@@ -364,6 +370,16 @@ public:
     SaveEvseFlags();
   }
   uint16_t GetAcFreqX100() { return m_AcFreqX100; }
+  uint16_t GetCurrentZeroThresholdMa() { return m_CurrentZeroThresholdMa; }
+  void SetCurrentZeroThresholdMa(uint16_t ma) {
+    if (ma > CURRENT_ZERO_THRESHOLD_MAX_MA) ma = CURRENT_ZERO_THRESHOLD_MAX_MA;
+    m_CurrentZeroThresholdMa = ma;
+    eeprom_write_word((uint16_t*)EOFS_CURRENT_ZERO_THRESHOLD_MA,ma);
+  }
+  uint16_t GetRelayHotSwitchCnt() { return m_RelayHotSwitchCnt; }
+  int32_t GetLastRelayOpenCurrentMa() { return m_LastRelayOpenCurrentMa; }
+  uint16_t GetRelayCloseTransitMs() { return m_RelayCloseTransitMs; }
+  uint16_t GetRelayOpenTransitMs() { return m_RelayOpenTransitMs; }
 #endif // RELAY_ZC_SWITCH
   int8_t BootLockIsEnabled() { return !flagIsSet(ECF_BOOT_LOCK_DISABLED); }
   void EnableBootLock(uint8_t tf) {

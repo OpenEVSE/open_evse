@@ -115,22 +115,33 @@ void J1772EVSEController::readAmmeter()
 }
 
 #ifdef RELAY_ZC_SWITCH
-// Wait for AC current amplitude to drop below CURRENT_ZERO_THRESHOLD_MA
-// (0.1 A) so the relay can be opened at a current zero. Polls readAmmeter()
+// Wait for AC current amplitude to drop below the configured zero threshold
+// (m_CurrentZeroThresholdMa, default CURRENT_ZERO_THRESHOLD_MA, tunable via
+// RAPI $SZ) so the relay can be opened at a current zero. Polls readAmmeter()
 // until the current falls below threshold or CURRENT_ZERO_TIMEOUT_MS elapses,
 // whichever comes first. The timeout guarantees the caller can proceed to open
 // the relay even if the measured current never reads below threshold (e.g. a
-// calibration offset that floors the computed current above it). WDT_RESET()
-// called each iteration. Emergency opens (chargingOff(1)) bypass this entirely.
-void J1772EVSEController::waitCurrentZero()
+// calibration offset that floors the computed current above it) - some field
+// units never satisfy the compiled-in default, which is what $SZ is for.
+// WDT_RESET() called each iteration. Emergency opens (chargingOff(1)) bypass
+// this entirely. Records the last-measured current in m_LastRelayOpenCurrentMa
+// regardless of outcome, for relay-life diagnostics ($GW). Returns 1 if the
+// relay is about to be opened "hot" (current never reached zero), else 0.
+uint8_t J1772EVSEController::waitCurrentZero()
 {
   unsigned long start = millis();
+  int32_t ma;
   do {
     WDT_RESET();
     readAmmeter();
-    int32_t ma = (int32_t)m_AmmeterReading * m_CurrentScaleFactor - m_AmmeterCurrentOffset;
-    if (ma < (int32_t)CURRENT_ZERO_THRESHOLD_MA) return;
+    ma = (int32_t)m_AmmeterReading * m_CurrentScaleFactor - m_AmmeterCurrentOffset;
+    if (ma < (int32_t)m_CurrentZeroThresholdMa) {
+      m_LastRelayOpenCurrentMa = ma;
+      return 0;
+    }
   } while ((millis() - start) < CURRENT_ZERO_TIMEOUT_MS);
+  m_LastRelayOpenCurrentMa = ma;
+  return 1;
 }
 
 // Measure AC frequency.  Stores the result (×100) in m_AcFreqX100 and sets
@@ -253,6 +264,32 @@ void J1772EVSEController::zcWaitRelay(uint8_t advanceMs)
 
 void J1772EVSEController::zcWaitRelayClose() { zcWaitRelay(RELAY_CLOSE_ADVANCE_MS); }
 void J1772EVSEController::zcWaitRelayOpen()  { zcWaitRelay(RELAY_OPEN_ADVANCE_MS); }
+
+// Relay-life diagnostic: times how long the relay physically takes to reach
+// the commanded state, measured from cmdStartMs (the moment the coil was
+// driven) until the load-side AC-sense pin (RLY_TEST_PIN_OPEN - WELD_DETECT
+// on SAMD) confirms the new contact position. Only meaningful on CGMI
+// hardware, where that pin tracks actual contact position independent of EV
+// load. Diagnostic only: never gates charging logic. Returns elapsed ms,
+// saturating at RELAY_TRANSIT_TIMEOUT_MS if the expected state is never
+// observed (also the "not measured" sentinel on non-CGMI/non-ADVPWR builds).
+uint16_t J1772EVSEController::waitRelayTransit(unsigned long cmdStartMs, uint8_t wantClosed)
+{
+#ifdef ADVPWR
+  if (hasCGMI()) {
+    uint8_t wantOpenBit = wantClosed ? 0 : RLY_TEST_PIN_OPEN;
+    unsigned long elapsed;
+    do {
+      WDT_RESET();
+      if ((ReadACPins() & RLY_TEST_PIN_OPEN) == wantOpenBit) {
+        return (uint16_t)(millis() - cmdStartMs);
+      }
+      elapsed = millis() - cmdStartMs;
+    } while (elapsed < RELAY_TRANSIT_TIMEOUT_MS);
+  }
+#endif // ADVPWR
+  return RELAY_TRANSIT_TIMEOUT_MS;
+}
 #endif // RELAY_ZC_SWITCH
 
 #define MA_PTS 32 // # points in moving average MUST BE power of 2
@@ -310,6 +347,9 @@ J1772EVSEController::J1772EVSEController() :
 #endif
 #ifdef RELAY_ZC_SWITCH
   m_AcFreqX100 = 0;
+  m_LastRelayOpenCurrentMa = 0;
+  m_RelayCloseTransitMs = 0;
+  m_RelayOpenTransitMs = 0;
 #endif
 }
 
@@ -428,6 +468,7 @@ void J1772EVSEController::chargingOn()
 {
 #ifdef RELAY_ZC_SWITCH
   if (hasCGMI() && RelayZCSwitchEnabled()) zcWaitRelayClose();
+  unsigned long relayCmdMs = millis(); // coil is about to be driven below
 #endif
   // turn on charging current
 #ifdef OEV6
@@ -462,6 +503,10 @@ void J1772EVSEController::chargingOn()
   if (RelayACEnabled()) pinChargingAC.write(1);
 #endif
 
+#ifdef RELAY_ZC_SWITCH
+  m_RelayCloseTransitMs = waitRelayTransit(relayCmdMs,1);
+#endif
+
   setVFlags(ECVF_CHARGING_ON);
   
   if (vFlagIsSet(ECVF_SESSION_ENDED)) {
@@ -479,12 +524,28 @@ void J1772EVSEController::chargingOn()
 void J1772EVSEController::chargingOff(uint8_t emergency)
 {
 #ifdef RELAY_ZC_SWITCH
-  if (!emergency && chargingIsOn() && RelayZCSwitchEnabled()) {
+  uint8_t wasOn = chargingIsOn();
+  if (wasOn) {
+    if (!emergency && RelayZCSwitchEnabled()) {
 #ifdef AMMETER
-    waitCurrentZero();
-#endif
-    zcWaitRelayOpen();
+      if (waitCurrentZero() && (m_RelayHotSwitchCnt < 0xfffe)) {
+        eeprom_write_word((uint16_t*)EOFS_RELAY_HOTSWITCH_CNT,++m_RelayHotSwitchCnt);
+      }
+#endif // AMMETER
+      zcWaitRelayOpen();
+    }
+    else {
+      // emergency open, or ZC switching disabled: always a hot break
+#ifdef AMMETER
+      readAmmeter();
+      m_LastRelayOpenCurrentMa = (int32_t)m_AmmeterReading * m_CurrentScaleFactor - m_AmmeterCurrentOffset;
+#endif // AMMETER
+      if (m_RelayHotSwitchCnt < 0xfffe) {
+        eeprom_write_word((uint16_t*)EOFS_RELAY_HOTSWITCH_CNT,++m_RelayHotSwitchCnt);
+      }
+    }
   }
+  unsigned long relayCmdMs = millis(); // coil is about to be released below
 #endif
  // turn off charging current
 #ifdef OEV6
@@ -510,6 +571,12 @@ void J1772EVSEController::chargingOff(uint8_t emergency)
 
 #ifdef CHARGINGAC_REG
   pinChargingAC.write(0);
+#endif
+
+#ifdef RELAY_ZC_SWITCH
+  if (wasOn) {
+    m_RelayOpenTransitMs = waitRelayTransit(relayCmdMs,0);
+  }
 #endif
 
   clrVFlags(ECVF_CHARGING_ON);
@@ -1159,6 +1226,17 @@ void J1772EVSEController::Init()
   if (m_relayFlags == 0xff) { // uninitialized EEPROM
     m_relayFlags = ERELAYF_DEFAULT;
   }
+
+#ifdef RELAY_ZC_SWITCH
+  m_CurrentZeroThresholdMa = eeprom_read_word((uint16_t*)EOFS_CURRENT_ZERO_THRESHOLD_MA);
+  if (m_CurrentZeroThresholdMa == 0xffff) { // uninitialized EEPROM
+    m_CurrentZeroThresholdMa = CURRENT_ZERO_THRESHOLD_MA;
+  }
+  m_RelayHotSwitchCnt = eeprom_read_word((uint16_t*)EOFS_RELAY_HOTSWITCH_CNT);
+  if (m_RelayHotSwitchCnt == 0xffff) { // uninitialized EEPROM
+    m_RelayHotSwitchCnt = 0;
+  }
+#endif // RELAY_ZC_SWITCH
 
 
 #ifdef OEV6

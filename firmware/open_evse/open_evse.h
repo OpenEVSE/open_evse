@@ -352,8 +352,22 @@ extern AutoCurrentCapacityController g_ACCController;
 // -135) an idle ammeter computes 135 mA, so 100 could never be reached and the
 // wait always ran to the timeout. 0.2 A is still far below any level the
 // contacts care about.
+// default only - the effective value is configurable at runtime via RAPI
+// ($SZ) and persisted to EEPROM (EOFS_CURRENT_ZERO_THRESHOLD_MA); this is
+// just what a freshly-formatted EEPROM starts with. Some field units never
+// read below this compiled-in default (different ammeter offset/noise floor
+// than the SAMD example above), which stalls every non-emergency relay open
+// for the full CURRENT_ZERO_TIMEOUT_MS - $SZ lets those units be retuned
+// without a firmware rebuild.
 #define CURRENT_ZERO_THRESHOLD_MA 200
 #define CURRENT_ZERO_TIMEOUT_MS  1000  // ms; give up waiting for zero and open the relay anyway
+// upper bound accepted by $SZ - also keeps the stored value away from 0xffff,
+// which is reserved to mean "EEPROM unformatted, use the compiled-in default"
+#define CURRENT_ZERO_THRESHOLD_MAX_MA 5000
+// max ms to wait for the load-side AC-sense pin (RLY_TEST_PIN_OPEN) to
+// confirm the relay physically reached the commanded state, timed from when
+// the coil was driven. Diagnostic only - never blocks/gates charging logic.
+#define RELAY_TRANSIT_TIMEOUT_MS  300
 #endif // RELAY_ZC_SWITCH
 
 // OEV6 w/ CGMI - when power is loss, temporarily triggers NO GROUND fault
@@ -539,6 +553,10 @@ extern AutoCurrentCapacityController g_ACCController;
 #define EOFS_RELAY_CLOSE_MS 37 // 1 byte
 #define EOFS_RELAY_HOLD_PWM 38 // 1 byte
 #define EOFS_RELAY_FLAGS    39 // 1 byte - relay enable/disable bitmask (ERELAYF_xxx)
+
+// RELAY_ZC_SWITCH relay-life diagnostics
+#define EOFS_CURRENT_ZERO_THRESHOLD_MA 40 // 2 bytes - configurable relay-open current-zero threshold (mA); 0xffff = unformatted, use CURRENT_ZERO_THRESHOLD_MA default
+#define EOFS_RELAY_HOTSWITCH_CNT       42 // 2 bytes - cumulative count of relay opens where current never reached the zero threshold; 0xffff = unformatted, treat as 0
 
 #define EOFS_MAX_HW_CURRENT_CAPACITY 511 // 1 byte
 
