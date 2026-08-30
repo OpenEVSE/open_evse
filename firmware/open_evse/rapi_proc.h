@@ -122,10 +122,22 @@ FD - disable EVSE
 FE - enable EVSE
  $FE*AF
 FH - reset relay Health/life estimate (requires RELAY_HEALTH)
- clears the relay-life cumulative-damage accumulator and the transit-time/
- thermal-index self-learned baselines - use after replacing the contactor,
- so the estimate doesn't carry over wear from the old relay.
+ clears the relay-life cumulative-damage accumulator, the transit-time/
+ thermal-index self-learned baselines, and the stuck-relay recovery
+ counter - use after replacing the contactor, so the estimate doesn't
+ carry over wear from the old relay.
  $FH*xx
+FK - run stucK relay recovery cycle manually (requires ADVPWR)
+ Cycles the relay (STUCK_RELAY_RECOVERY_ROUNDS rounds of
+ STUCK_RELAY_RECOVERY_CYCLES on/off toggles each, shortening each toggle
+ within a round) to try to free a welded/stuck contact, same routine the
+ controller runs automatically on EVSE_STATE_STUCK_RELAY entry. NAK'd if
+ an EV is connected (unsafe to cycle the relay under load) - check $G0
+ first. Does not itself report whether the relay came free - check $GS
+ (state) or $GL (recovery counter) afterward. Blocking: up to ~30s worst
+ case (3 rounds x 5 toggles x up to 2s on+off, plus zero-cross/transit
+ overhead) before the response comes back.
+ $FK*xx
 FO set Overtemperature threshold
  $FO panicthresh
  panicthresh in 10ths of a degree Celsius
@@ -423,7 +435,7 @@ GW - get relay Wear/life diagnostics (requires RELAY_ZC_SWITCH)
  $GW^39
 
 GL - get relay Life/health estimate (requires RELAY_HEALTH; needs RELAY_ZC_SWITCH + AMMETER)
- response: $OK pctremain coldopencnt elecdamagex1e6 transitbaselinems transitdrift thermalx100 thermalbaselinex100 thermalwarn
+ response: $OK pctremain coldopencnt elecdamagex1e6 transitbaselinems transitdrift thermalx100 thermalbaselinex100 thermalwarn stuckrelayrecoverycnt
  Cumulative-damage (Miner's rule) contact-life estimate built on the $GW
  diagnostics, plus (if TEMPERATURE_MONITORING) a self-baselined thermal
  index. Diagnostic only - never gates charging logic. See RelayHealth.h for
@@ -450,6 +462,10 @@ GL - get relay Life/health estimate (requires RELAY_HEALTH; needs RELAY_ZC_SWITC
    yet established (needs 4 in-session samples) or not available.
  thermalwarn(decimal): 0=ok/not available 1=watch (>=1.5x baseline)
    2=warn (>=2x baseline).
+ stuckrelayrecoverycnt(decimal): cumulative count of stuck-relay recovery
+   attempts run (automatic, on EVSE_STATE_STUCK_RELAY entry with no EV
+   connected, or manual via $FK). 0 if ADVPWR isn't built in. Saturates at
+   65534; persisted across reboots; reset via $FH.
  $GL^3a
 
 Z0 FOR TESTING RELAY_AUTO_PWM_PIN ONLY

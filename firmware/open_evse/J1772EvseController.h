@@ -184,6 +184,7 @@ class J1772EVSEController {
   uint8_t m_NoGndTripCnt; // contains tripcnt-1
   unsigned long m_StuckRelayStartTimeMS;
   uint8_t m_StuckRelayTripCnt; // contains tripcnt-1
+  uint16_t m_StuckRelayRecoveryCnt; // cumulative count of stuck-relay recovery attempts run
 #endif // ADVPWR
 #ifdef RELAY_PWM
   uint8_t m_relayCloseMs; // #ms for DC pulse to close relay
@@ -267,6 +268,7 @@ class J1772EVSEController {
 #define FG 5 // GFI fault
 
   uint8_t doPost();
+  uint8_t RelayIsStuck(uint8_t acpinstate); // true if acpinstate reads as contacts still closed w/ relay commanded open
 #endif // ADVPWR
   void chargingOn();
   void chargingOff(uint8_t emergency = 0);
@@ -609,6 +611,17 @@ int GetHearbeatTrigger();
 #ifdef ADVPWR
   uint8_t GetNoGndTripCnt() { return m_NoGndTripCnt+1; }
   uint8_t GetStuckRelayTripCnt() { return m_StuckRelayTripCnt+1; }
+  uint16_t GetStuckRelayRecoveryCnt() { return m_StuckRelayRecoveryCnt; }
+  // Attempts to free a welded/stuck relay by cycling it: STUCK_RELAY_RECOVERY_CYCLES
+  // on/off toggles per round (each toggle shorter than the last), for up to
+  // STUCK_RELAY_RECOVERY_ROUNDS rounds, re-testing the contacts after each
+  // round. Caller's responsibility to ensure it's safe to actuate the relay
+  // (i.e. no EV connected) - this does not check EvConnected() itself, since
+  // the automatic caller (Update()) and the manual RAPI caller ($FK) apply
+  // that policy differently. Returns 1 if the contacts tested free
+  // afterward, 0 if still stuck. Always counts as one attempt in
+  // GetStuckRelayRecoveryCnt(), regardless of outcome.
+  uint8_t AttemptStuckRelayRecovery();
 #endif // ADVPWR
 
 #ifdef STATE_TRANSITION_REQ_FUNC
@@ -679,6 +692,15 @@ int GetHearbeatTrigger();
     eeprom_write_byte((uint8_t*)EOFS_NOGND_TRIP_CNT,0xff);
     eeprom_write_byte((uint8_t*)EOFS_STUCK_RELAY_TRIP_CNT,0xff);
   }
+#ifdef ADVPWR
+  // separate from ResetFaultCounters() ($FC) - grouped with the relay-life
+  // resets under $FH instead, since it's a wear/diagnostic counter (like
+  // RelayHealth's accumulators), not a fault-trip counter
+  void ResetStuckRelayRecoveryCnt() {
+    m_StuckRelayRecoveryCnt = 0;
+    eeprom_write_word((uint16_t*)EOFS_STUCK_RELAY_RECOVERY_CNT,0);
+  }
+#endif // ADVPWR
 #ifdef PP_AUTO_AMPACITY
   void DoPPError(bool shorted);
 #endif // PP_AUTO_AMPACITY

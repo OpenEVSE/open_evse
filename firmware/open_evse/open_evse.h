@@ -628,6 +628,9 @@ extern AutoCurrentCapacityController g_ACCController;
 #define EOFS_RELAY_THERMAL_BASELINE_X100 53 // 2 bytes - self-learned thermal-index baseline H0 (deltaT/I^2 x100)
 #define EOFS_RELAY_THERMAL_BASELINE_N    55 // 1 byte  - # samples averaged into the thermal baseline so far
 
+// stuck-relay auto-recovery
+#define EOFS_STUCK_RELAY_RECOVERY_CNT    56 // 2 bytes - cumulative count of stuck-relay recovery attempts run; 0xffff = unformatted, treat as 0
+
 #define EOFS_MAX_HW_CURRENT_CAPACITY 511 // 1 byte
 
 
@@ -642,6 +645,20 @@ extern AutoCurrentCapacityController g_ACCController;
 #define GROUND_CHK_DELAY  1000 // delay after charging started to test, ms
 #define STUCK_RELAY_DELAY 1000 // delay after charging opened to test, ms
 #define RelaySettlingTime  250 // time for relay to settle in post, ms
+
+// Stuck-relay auto-recovery (ADVPWR only - needs the AC-sense pin to
+// re-test the contacts). Attempted once, automatically, whenever
+// EVSE_STATE_STUCK_RELAY is freshly entered with no EV connected (unsafe to
+// cycle the relay under load, so this is skipped otherwise and falls
+// straight through to the normal hard fault). Also runnable on demand via
+// RAPI $FK. A round is STUCK_RELAY_RECOVERY_CYCLES on/off toggles, each
+// shorter than the last; the contacts are re-tested after each round, for
+// up to STUCK_RELAY_RECOVERY_ROUNDS rounds.
+#define STUCK_RELAY_RECOVERY_CYCLES    5    // on/off toggles per round
+#define STUCK_RELAY_RECOVERY_ROUNDS    3    // rounds to attempt before giving up
+#define STUCK_RELAY_RECOVERY_START_MS  1000 // first toggle's on/off duration, ms
+#define STUCK_RELAY_RECOVERY_STEP_MS   200  // shorten by this much each toggle within a round
+#define STUCK_RELAY_RECOVERY_MIN_MS    200  // never shorten past this floor, ms
 
 // ACPINS sample interval - max number of ms to sample
 // used only when ADVPWR - for rectified MID400 chips which block

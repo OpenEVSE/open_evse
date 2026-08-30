@@ -312,9 +312,21 @@ int EvseRapiProcessor::processCmd()
 #ifdef RELAY_HEALTH
     case 'H': // reset relay Health/life estimate (e.g. after relay replacement)
       g_RelayHealth.ResetLifeEstimate();
+#ifdef ADVPWR
+      g_EvseController.ResetStuckRelayRecoveryCnt();
+#endif // ADVPWR
       rc = 0;
       break;
 #endif // RELAY_HEALTH
+#ifdef ADVPWR
+    case 'K': // run stucK relay recovery cycle manually
+      if (!g_EvseController.EvConnected()) {
+        g_EvseController.AttemptStuckRelayRecovery();
+        rc = 0;
+      }
+      // else: refuse - EV connected, unsafe to cycle the relay under load
+      break;
+#endif // ADVPWR
     case 'F': // enable/disable feature
       if (tokenCnt == 3) {
 	u1.u8 = (uint8_t)(*tokens[2] - '0');
@@ -914,7 +926,7 @@ int EvseRapiProcessor::processCmd()
 #endif // RELAY_ZC_SWITCH
 #ifdef RELAY_HEALTH
     case 'L': // get relay Life/health estimate
-      sprintf(buffer,"%u %u %lu %u %u %u %u %u",
+      sprintf(buffer,"%u %u %lu %u %u %u %u %u %u",
               g_RelayHealth.GetLifeRemainingPct(),
               g_RelayHealth.GetColdOpenCnt(),
               (unsigned long)g_RelayHealth.GetElecDamageX1e6(),
@@ -922,7 +934,12 @@ int EvseRapiProcessor::processCmd()
               g_RelayHealth.TransitDriftWarning(),
               g_RelayHealth.GetThermalIndexX100(),
               g_RelayHealth.GetThermalBaselineX100(),
-              g_RelayHealth.ThermalWarningLevel());
+              g_RelayHealth.ThermalWarningLevel(),
+#ifdef ADVPWR
+              g_EvseController.GetStuckRelayRecoveryCnt());
+#else
+              (unsigned)0);
+#endif // ADVPWR
       bufCnt = 1;
       rc = 0;
       break;

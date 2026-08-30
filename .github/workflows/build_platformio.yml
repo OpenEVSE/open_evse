@@ -22,11 +22,6 @@ jobs:
             platformio: 6.1.5
             arch: avr
             artifact: firmware.hex
-          - env: m328p_noWiFi
-            python: 3.x
-            platformio: 6.1.5
-            arch: avr
-            artifact: firmware.hex
           - env: samd
             python: 3.x
             platformio: 6.1.5

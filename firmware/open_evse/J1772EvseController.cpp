@@ -943,6 +943,57 @@ uint8_t J1772EVSEController::ReadACPins()
 #endif // OPENEVSE_2
 }
 
+// true if acpinstate reads as the contacts still closed while the relay is
+// commanded open - i.e. welded/stuck. Same test used by the runtime
+// stuck-relay detector in Update() and by AttemptStuckRelayRecovery() to
+// re-test after each recovery round.
+uint8_t J1772EVSEController::RelayIsStuck(uint8_t acpinstate)
+{
+  return (hasCGMI() && !(acpinstate & RLY_TEST_PIN_OPEN)) ||
+         (!hasCGMI() && (acpinstate != ACPINS_OPEN));
+}
+
+// Attempts to free a welded/stuck relay: STUCK_RELAY_RECOVERY_ROUNDS rounds
+// of STUCK_RELAY_RECOVERY_CYCLES on/off toggles each (each toggle shorter
+// than the last within a round), re-testing the contacts after every round
+// and stopping early on success. Drives the relay via the normal
+// chargingOn()/chargingOff() path so it gets the right hardware handling
+// for every target/relay-drive variant, proper zero-cross timing when
+// enabled, and the same relay-life diagnostics (RelayHealth, $GW) as any
+// other open/close - these are real operations on the contact and should be
+// accounted for the same way. No EV is connected while this runs (caller's
+// responsibility to check), so every open here is a cold open.
+//
+// Blocking: worst case is 3 rounds * 5 toggles * up to 2s per toggle (on+off)
+// = well under a minute, but the caller (Update() or the $FK RAPI handler)
+// is stalled for the duration. WDT_RESET() every iteration; no single wait
+// segment approaches WATCHDOG_TIMEOUT_SEC.
+uint8_t J1772EVSEController::AttemptStuckRelayRecovery()
+{
+  if (m_StuckRelayRecoveryCnt < 0xfffe) {
+    eeprom_write_word((uint16_t*)EOFS_STUCK_RELAY_RECOVERY_CNT,++m_StuckRelayRecoveryCnt);
+  }
+
+  uint8_t stillStuck = 1;
+  for (uint8_t round = 0; stillStuck && (round < STUCK_RELAY_RECOVERY_ROUNDS); round++) {
+    for (uint8_t cycle = 0; cycle < STUCK_RELAY_RECOVERY_CYCLES; cycle++) {
+      uint16_t toggleMs = STUCK_RELAY_RECOVERY_START_MS - (STUCK_RELAY_RECOVERY_STEP_MS * cycle);
+      if (toggleMs < STUCK_RELAY_RECOVERY_MIN_MS) toggleMs = STUCK_RELAY_RECOVERY_MIN_MS;
+
+      chargingOn();
+      unsigned long start = millis();
+      do { WDT_RESET(); } while ((millis() - start) < toggleMs);
+
+      chargingOff();
+      start = millis();
+      do { WDT_RESET(); } while ((millis() - start) < toggleMs);
+    }
+
+    stillStuck = RelayIsStuck(ReadACPins());
+  }
+
+  return !stillStuck;
+}
 
 uint8_t J1772EVSEController::doPost()
 {
@@ -1412,6 +1463,10 @@ void J1772EVSEController::Init()
 
   m_StuckRelayStartTimeMS = 0;
   m_StuckRelayTripCnt = eeprom_read_byte((uint8_t*)EOFS_STUCK_RELAY_TRIP_CNT);
+  m_StuckRelayRecoveryCnt = eeprom_read_word((uint16_t*)EOFS_STUCK_RELAY_RECOVERY_CNT);
+  if (m_StuckRelayRecoveryCnt == 0xffff) { // uninitialized EEPROM
+    m_StuckRelayRecoveryCnt = 0;
+  }
 
   m_NoGndRetryCnt = 0;
   m_NoGndStart = 0;
@@ -1716,8 +1771,7 @@ void J1772EVSEController::Update(uint8_t forcetransition)
         }
       }
       else if (StuckRelayChkEnabled()) {    // stuck relay check - can test only when relay open
-        if ((hasCGMI() && !(acpinstate & RLY_TEST_PIN_OPEN)) ||
-            (!hasCGMI() && (acpinstate != ACPINS_OPEN))) { // Stuck Relay reading
+        if (RelayIsStuck(acpinstate)) { // Stuck Relay reading
           if ((prevevsestate != EVSE_STATE_STUCK_RELAY) && !m_StuckRelayStartTimeMS) { //check for first occurence
             m_StuckRelayStartTimeMS = curms; // mark start state
           }
@@ -2073,11 +2127,27 @@ if (TempChkEnabled()) {
     else if (m_EvseState == EVSE_STATE_STUCK_RELAY) {
       // Stuck relay detected
       chargingOff(); // turn off charging current
+      uint8_t recovered = 0;
+#ifdef ADVPWR
+      // Only safe to cycle the relay with no EV connected - if one's
+      // plugged in, skip straight to the hard fault below. On success,
+      // cancel the fault and let normal detection re-evaluate from
+      // scratch; on failure, fall through to the same hard fault as before.
+      if (!EvConnected() && AttemptStuckRelayRecovery()) {
+        m_StuckRelayStartTimeMS = 0;
+        recovered = 1;
+      }
+#endif // ADVPWR
+      if (recovered) {
+        m_EvseState = EVSE_STATE_UNKNOWN;
+      }
+      else {
 #ifdef UL_COMPLIANT
       // per discussion w/ UL Fred Reyes 20150217
       // always hard fault stuck relay
       HardFault(0);
 #endif // UL_COMPLIANT
+      }
     }
     else {
       m_Pilot.SetState(PILOT_STATE_P12);
