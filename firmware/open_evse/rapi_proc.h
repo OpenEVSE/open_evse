@@ -487,11 +487,17 @@ Z0 closems holdpwm
 
 // buffer[] holds an inbound RAPI command and is reused to build the
 // outbound response text. The longest response text is $GI (get MCU id),
-// whose #else branch writes 2*MCU_ID_LEN hex chars plus a NUL. On SAMD
-// MCU_ID_LEN is 16, so that is 2*16+1 = 33 bytes and the historic 32-byte
-// buffer overflowed by one, corrupting the adjacent bufCnt member. Size
-// per target so AVR RAM cost stays zero.
-#ifdef TARGET_SAMD
+// whose #else branch writes 2*MCU_ID_LEN hex chars plus a NUL. With a
+// 16-byte MCU id that is 2*16+1 = 33 bytes and the historic 32-byte buffer
+// overflowed by one, corrupting the adjacent bufCnt member.
+//
+// Size from the MCU id length rather than the target name, so any target
+// inherits the right buffer automatically. The values are unchanged from
+// when this was keyed on TARGET_SAMD: a 16-byte id selects 40, a 10-byte
+// id selects 32, so AVR RAM cost stays zero (ESRAPI_BUFLEN sizes three
+// buffers there -- buffer[], g_rapiSerialBuffer and g_rapiI2ClBuffer).
+#define ESRAPI_GI_RESPLEN (2*MCU_ID_LEN + 1)
+#if defined(MCU_ID_LEN) && (ESRAPI_GI_RESPLEN > 32)
 #define ESRAPI_BUFLEN 40
 #else
 #define ESRAPI_BUFLEN 32
