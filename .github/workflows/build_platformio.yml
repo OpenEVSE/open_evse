@@ -26,6 +26,18 @@ jobs:
             python: 3.x
             platformio: 6.1.5
             arch: samd
+          - env: native_oev6
+            python: 3.x
+            platformio: 6.1.5
+            arch: native
+            tests: true
+          # Compile-only for now: the bench does not yet model a CGMI board,
+          # so the session tests stop at the POST ground check on NXT.
+          - env: native_nxt
+            python: 3.x
+            platformio: 6.1.5
+            arch: native
+            tests: false
 
     steps:
     - uses: actions/checkout@v5
@@ -56,6 +68,12 @@ jobs:
 
     - name: Run PlatformIO
       run: pio run -e ${{ matrix.env }}
+
+    - name: Run native safety tests
+      if: matrix.arch == 'native' && matrix.tests
+      run: |
+        pip install -r firmware/targets/native/tests/requirements.txt
+        pytest firmware/targets/native/tests -q --env ${{ matrix.env }}
 
     - name: Get compiler and output info (AVR)
       if: matrix.arch == 'avr'
