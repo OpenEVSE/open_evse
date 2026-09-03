@@ -129,4 +129,13 @@ void eeprom_write_byte(uint8_t *ofs, uint8_t val);
 void eeprom_write_word(uint16_t *ofs, uint16_t val);
 void eeprom_write_dword(uint32_t *ofs, uint32_t val);
 
+// Driving and observing the pin state from outside the firmware's own
+// DigitalPin/AdcPin interface. Deliberately a separate path, so a driver
+// cannot write an input through the same call the firmware reads it with.
+void nativeSetDigitalIn(uint8_t pin, uint8_t val);
+uint8_t nativeGetDigitalOut(uint8_t pin);
+// high == low presents a steady level; otherwise successive reads alternate,
+// which is what the firmware's peak-to-peak sampling needs. See target.cpp.
+void nativeSetAdc(uint8_t pin, uint16_t high, uint16_t low);
+
 void initTarget();

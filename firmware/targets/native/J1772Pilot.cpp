@@ -1,4 +1,5 @@
 #include "open_evse.h"
+#include "channel.h"
 
 void J1772Pilot::Init()
 {
@@ -14,6 +15,8 @@ void J1772Pilot::SetState(PILOT_STATE pstate)
   m_State = pstate;
   m_Amps = -1;
   m_Duty = (pstate == PILOT_STATE_P12) ? 1000 : 0;
+
+  channelPublishPilot((uint8_t)m_State, m_Duty, m_Amps);
 }
 
 // set EVSE current capacity in Amperes
@@ -25,7 +28,7 @@ int J1772Pilot::SetPWM(int amps)
   //   52..80A: duty% = 64 + amps / 2.5
   uint32_t duty;
   if ((amps >= 6) && (amps <= 51)) {
-    duty = ((uint32_t)amps * 1000u) / 6u;   // amps/0.6  -> 32A = 533 (53.3%)
+    duty = ((uint32_t)amps * 100u) / 6u;    // amps/0.6  -> 24A = 400 (40.0%)
   }
   else if ((amps > 51) && (amps <= 80)) {
     duty = 640u + ((uint32_t)amps * 4u);    // 64%+amps/2.5 -> 80A = 960 (96%)
@@ -37,6 +40,8 @@ int J1772Pilot::SetPWM(int amps)
   m_Duty = duty;
   m_Amps = amps;
   m_State = PILOT_STATE_PWM;
+
+  channelPublishPilot((uint8_t)m_State, m_Duty, m_Amps);
 
   return 0;
 }

@@ -1,4 +1,5 @@
 #include "open_evse.h"
+#include "channel.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -11,28 +12,45 @@ THRESH_DATA J1772EVSEController::m_ThreshData = { 875,  780,  690, 0, 260};
 #endif
 
 // ---------------------------------------------------------------------------
-// Pin state block
+// Pin state
 //
-// The whole of the firmware's observable hardware, in two arrays. Phase 4
-// replaces the accessors below with reads and writes that cross the control
-// channel; until then inputs hold whatever they were last set to and outputs
-// are simply recorded.
+// The whole of the firmware's observable hardware. Reads and writes here are
+// what the control channel publishes and drives; see channel.cpp.
 // ---------------------------------------------------------------------------
 
 namespace {
 
-uint8_t  g_digitalIn[NATIVE_DIGITAL_PIN_COUNT];
-uint8_t  g_digitalOut[NATIVE_DIGITAL_PIN_COUNT];
-uint16_t g_adc[NATIVE_ADC_PIN_COUNT];
+// Only ADC values are held here. Digital pin state lives in EpoxyDuino's own
+// store, reached through digitalRead/digitalReadValue/digitalWrite, so that a
+// driver raising an input also feeds checkInterrupts() -- which is what makes
+// a GFI edge dispatch gfi_isr() the way the hardware interrupt would. Keeping
+// a second private array here would have left the interrupt path dead.
+//
+// Each ADC channel carries two levels rather than one, because the firmware
+// samples two of its inputs as waveforms and not as values. ReadPilot() takes
+// the min and max over PILOT_LOOP_CNT samples and rejects the reading unless
+// the negative excursion is there (plow < m_ThreshDS, else DIODE_CHK_FAILED);
+// readAmmeter() derives RMS from peak-to-peak the same way. A single level
+// cannot express either, so a channel that only set one could never get the
+// firmware past its own diode check.
+//
+// Alternating successive reads is the whole of the emulation: which levels to
+// present, and what they mean, stays with the driver.
+struct AdcChannel {
+  uint16_t high;
+  uint16_t low;
+  bool     phase;
+};
+
+AdcChannel g_adc[NATIVE_ADC_PIN_COUNT];
 
 } // namespace
 
 // Service the outside world. Called from WDT_RESET() and from every pin read,
-// which between them cover every wait loop in the shared firmware -- see the
-// pump-point audit in the native target notes. A no-op until phase 4 gives it
-// a channel to service.
+// which between them cover every wait loop in the shared firmware.
 void nativeServiceIo()
 {
+  channelService();
 }
 
 void DigitalPin::init(uint32_t pinnum, int /*idxUnused*/, PinMode m)
@@ -48,28 +66,33 @@ void DigitalPin::mode(PinMode m)
 
   // An input with a pull-up reads high until something drives it low, which
   // is what the firmware expects of an unconnected ACLINE or lock pin.
-  if (m == INP_PU) g_digitalIn[_pin] = HIGH;
+  if (m == INP_PU) digitalReadValue(_pin, HIGH);
 }
 
 uint8_t DigitalPin::read()
 {
   nativeServiceIo();
   if (_pin >= NATIVE_DIGITAL_PIN_COUNT) return LOW;
-  return (_mode == OUT) ? g_digitalOut[_pin] : g_digitalIn[_pin];
+  return (_mode == OUT) ? digitalWriteValue(_pin) : (uint8_t)digitalRead(_pin);
 }
 
 void DigitalPin::write(uint32_t state)
 {
   if (_mode != OUT) return;
   if (_pin >= NATIVE_DIGITAL_PIN_COUNT) return;
-  g_digitalOut[_pin] = state ? HIGH : LOW;
+  digitalWrite(_pin, state ? HIGH : LOW);
 }
 
 uint32_t AdcPin::read()
 {
   nativeServiceIo();
   if (_pin >= NATIVE_ADC_PIN_COUNT) return 0;
-  return g_adc[_pin];
+
+  AdcChannel &ch = g_adc[_pin];
+  if (ch.high == ch.low) return ch.high;
+
+  ch.phase = !ch.phase;
+  return ch.phase ? ch.high : ch.low;
 }
 
 #ifdef RELAY_ZC_SWITCH
@@ -88,19 +111,21 @@ void gmiAdcEnd() {}
 
 void nativeSetDigitalIn(uint8_t pin, uint8_t val)
 {
-  if (pin < NATIVE_DIGITAL_PIN_COUNT) g_digitalIn[pin] = val ? HIGH : LOW;
+  if (pin < NATIVE_DIGITAL_PIN_COUNT) digitalReadValue(pin, val ? HIGH : LOW);
 }
 
 uint8_t nativeGetDigitalOut(uint8_t pin)
 {
-  return (pin < NATIVE_DIGITAL_PIN_COUNT) ? g_digitalOut[pin] : LOW;
+  return (pin < NATIVE_DIGITAL_PIN_COUNT) ? digitalWriteValue(pin) : LOW;
 }
 
-void nativeSetAdc(uint8_t pin, uint16_t counts)
+void nativeSetAdc(uint8_t pin, uint16_t high, uint16_t low)
 {
-  if (pin < NATIVE_ADC_PIN_COUNT) {
-    g_adc[pin] = (counts > ADC_MAX) ? ADC_MAX : counts;
-  }
+  if (pin >= NATIVE_ADC_PIN_COUNT) return;
+  if (high > ADC_MAX) high = ADC_MAX;
+  if (low  > ADC_MAX) low  = ADC_MAX;
+  g_adc[pin].high = high;
+  g_adc[pin].low  = low;
 }
 
 // ---------------------------------------------------------------------------
@@ -241,6 +266,7 @@ void eeprom_write_dword(uint32_t *ofs, uint32_t val)
 void initTarget()
 {
   eepromLoad();
+  channelBegin();
 
   // CGMI (combined ground monitor / weld detect) is hardwired on NXT.
 #ifdef NATIVE_BOARD_NXT
@@ -251,10 +277,14 @@ void initTarget()
 
   // Start from a plausible idle bench: no EV, no current, both AC test pins
   // reading mains present, GFI clear.
-  nativeSetAdc(PILOT_SENSE_PIN, ADC_MAX);
-  nativeSetAdc(CURRENT_PIN, ADC_HALF);
-  nativeSetAdc(PP_PIN, ADC_MAX);
-  nativeSetDigitalIn(GFI_REG, LOW);
-  nativeSetDigitalIn(ACLINE1_REG, LOW);
-  nativeSetDigitalIn(ACLINE2_REG, LOW);
+  // Idle bench: pilot at a steady +12V (state A, no PWM), no current, PP open.
+  nativeSetAdc(PILOT_SENSE_PIN, ADC_MAX, ADC_MAX);
+  nativeSetAdc(CURRENT_PIN, ADC_HALF, ADC_HALF);
+  nativeSetAdc(PP_PIN, ADC_MAX, ADC_MAX);
+  // Digital inputs are deliberately not preset here. J1772EVSEController::Init
+  // runs after this and calls DigitalPin::init(..., INP_PU) on the AC-sense and
+  // GFI lines, which sets them to the pull-up state -- anything written here
+  // would simply be overwritten. Until a driver drives them they read as an
+  // unconnected input does on hardware: high, which the firmware reads as "no
+  // voltage at the pin" (the AC-sense lines are active low).
 }
