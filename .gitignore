@@ -190,3 +190,6 @@ Platformio
 
 # build files
 .hex
+
+# native target EEPROM backing file
+openevse_eeprom.bin
