@@ -527,7 +527,13 @@ extern AutoCurrentCapacityController g_ACCController;
 // 10-byte MCU id needs only 33 for $GI, so the LCD-derived 34 still fits;
 // keep AVR unchanged so its RAM footprint does not grow. See the matching
 // #error guard in rapi_proc.cpp.
-#ifdef TARGET_SAMD
+//
+// Select from the MCU id length rather than the target name: take the
+// LCD-derived size unless the $GI reply needs more. Values are unchanged
+// from when this was keyed on TARGET_SAMD -- a 16-byte id needs 45 and so
+// selects 48, a 10-byte id needs 33 and so keeps the LCD-derived 34.
+#define TMP_BUF_GI_REPLYLEN (3 + 1 + (2*MCU_ID_LEN) + 4 + 4 + 1)
+#if defined(MCU_ID_LEN) && (TMP_BUF_GI_REPLYLEN > ((LCD_MAX_CHARS_PER_LINE+1)*2))
 #define TMP_BUF_SIZE 48
 #else
 #define TMP_BUF_SIZE ((LCD_MAX_CHARS_PER_LINE+1)*2)
