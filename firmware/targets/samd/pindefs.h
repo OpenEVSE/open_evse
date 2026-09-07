@@ -11,6 +11,7 @@
 #define CURRENT_PIN     ZERO_PA02 // analog current reading pin A0
 #define PILOT_SENSE_PIN ZERO_PB08 // analog pilot voltage reading pin A1
 #define PP_PIN          ZERO_PB09 // PP_READ - A2
+#define PP2_PIN         ZERO_PA04 // PP2_READ - A3 (cable NTC thermistor input, see CableTempMonitor.h)
 
 
 #define ACLINE1_REG ZERO_PA08 // WELD_DETECT

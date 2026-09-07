@@ -338,6 +338,11 @@ int EvseRapiProcessor::processCmd()
 	    g_EvseController.ButtonEnable(u1.u8);
 	    break;
 #endif // BTN_MENU
+#ifdef CABLE_TEMPERATURE_MONITORING
+	  case 'C': // Cable temperature monitoring
+	    g_CableTempMonitor.Enable(u1.u8);
+	    break;
+#endif // CABLE_TEMPERATURE_MONITORING
 	  case 'D': // diode check
 	    g_EvseController.EnableDiodeCheck(u1.u8);
 	    break;
@@ -598,6 +603,25 @@ int EvseRapiProcessor::processCmd()
       }
       break;
 #endif // VOLTMETER
+#ifdef CABLE_TEMPERATURE_MONITORING
+    case 'N': // set cable temperature sensor config
+      // n.b. values are passed through as int32_t - narrowing them here would
+      // wrap an out-of-range argument into range instead of NAKing it
+      if (tokenCnt == 3) { // $SN idx pin - reassign the input pin only
+        rc = g_CableTempMonitor.SetPin((int32_t)dtoi32(tokens[1]),
+                                       (int32_t)dtoi32(tokens[2]));
+      }
+      else if (tokenCnt == 7) { // $SN idx pin r25 beta offset panic
+        rc = g_CableTempMonitor.SetCfg((int32_t)dtoi32(tokens[1]),
+                                       (int32_t)dtoi32(tokens[2]),
+                                       (int32_t)dtoi32(tokens[3]),
+                                       (int32_t)dtoi32(tokens[4]),
+                                       (int32_t)dtoi32(tokens[5]),
+                                       (int32_t)dtoi32(tokens[6]));
+      }
+      break;
+#endif // CABLE_TEMPERATURE_MONITORING
+
 #ifdef DELAYTIMER     
     case 'T': // timer
       if (tokenCnt == 5) {
@@ -843,6 +867,30 @@ int EvseRapiProcessor::processCmd()
       rc = 0;
       break;
 #endif // VOLTMETER
+#ifdef CABLE_TEMPERATURE_MONITORING
+    case 'N': // get cable temperatures, or one sensor's config
+      if (tokenCnt == 1) {
+        sprintf(buffer,"%d %d %d %d",
+                (int)g_CableTempMonitor.GetTempC10(CABLE_TEMP_EV1),
+                (int)g_CableTempMonitor.GetTempC10(CABLE_TEMP_EV2),
+                (int)g_CableTempMonitor.GetTempC10(CABLE_TEMP_IN1),
+                (int)g_CableTempMonitor.GetTempC10(CABLE_TEMP_IN2));
+        bufCnt = 1; // flag response text output
+        rc = 0;
+      }
+      else if (tokenCnt == 2) {
+        int32_t ctidx = (int32_t)dtoi32(tokens[1]);
+        const CABLE_TEMP_CFG *ctc = ((ctidx >= 0) && (ctidx < CABLE_TEMP_SENSOR_CNT))
+          ? g_CableTempMonitor.GetCfg((uint8_t)ctidx) : 0;
+        if (ctc) {
+          sprintf(buffer,"%d %u %u %d %d",(int)ctc->pin,(unsigned)ctc->r25,
+                  (unsigned)ctc->beta,(int)ctc->offset,(int)ctc->panic);
+          bufCnt = 1; // flag response text output
+          rc = 0;
+        }
+      }
+      break;
+#endif // CABLE_TEMPERATURE_MONITORING
 #ifdef TEMPERATURE_MONITORING
     case 'O':
       u1.i = g_TempMonitor.m_panicTemperature;

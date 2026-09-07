@@ -26,6 +26,7 @@
 #define CURRENT_PIN 0 // analog current reading pin ADCx
 #define PILOT_SENSE_PIN 1 // analog pilot voltage reading pin ADCx
 #define PP_PIN 2 // PP_READ - ADC2
+#define PP2_PIN 3 // PP2_READ - ADC3 (cable NTC thermistor input, see CableTempMonitor.h)
 
  // TEST PIN 1 for L1/L2, ground and stuck relay
 #define ACLINE1_REG &PIND

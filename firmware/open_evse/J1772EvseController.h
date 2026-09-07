@@ -402,6 +402,12 @@ public:
     else clrFlags(ECF_PP_AUTO_AMPACITY);
     SaveEvseFlags();
     g_ACCController.Enable(tf);
+#ifdef CABLE_TEMPERATURE_MONITORING
+    // PP_READ has one owner: taking it back for proximity pilot unassigns any
+    // cable temperature source sitting on it. The inverse - assigning a source
+    // to PP_READ - turns this off, in CableTempMonitor::SetPin().
+    if (tf) g_CableTempMonitor.ReleasePPPin();
+#endif // CABLE_TEMPERATURE_MONITORING
   }
   #endif // PP_AUTO_AMPACITY
   unsigned long GetResetMs();

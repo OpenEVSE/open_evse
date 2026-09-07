@@ -155,6 +155,9 @@ FF - enable/disable feature
  0|1 0=disable 1=enable
  feature_id:
   B = disable/enable front panel button
+  C = Cable temperature monitoring (requires CABLE_TEMPERATURE_MONITORING)
+      NTC thermistors in the EV/input cables - see $SN/$GN. Independent of
+      T below: these are separate sensors with their own thresholds.
   D = Diode check
   E = command Echo
    use this for interactive terminal sessions with RAPI.
@@ -165,6 +168,9 @@ FF - enable/disable feature
   L = boot Lock
   O = overcurrent check
   P = PP auto ampacity
+      n.b. PP_READ is shared with cable temperature monitoring. Enabling
+      this unassigns any $SN source using pin 1, and assigning a source to
+      pin 1 disables this. Both changes are silent - read back with $GE/$GN.
   R = stuck Relay check
   T = temperature monitoring
   V = Vent required check
@@ -252,6 +258,40 @@ SY heartbeatinterval heartbeatcurrentlimit
  $SY        //This is a heartbeat supervision pulse.  Need one every heartbeatinterval seconds.
  $SY 165    //This is an acknowledgement of a missed pulse.  Magic Cookie = 165 (=0XA5)
  When you send a pulse, an NK response indicates that a previous pulse was missed and has not yet been acked
+
+SN - set cable temperature sensor configuration (requires CABLE_TEMPERATURE_MONITORING)
+ two forms:
+  $SN idx pin                        - reassign the input pin only
+  $SN idx pin r25 beta offset panic  - set the whole configuration
+ idx(decimal): temperature source
+   0 = EV1, 1 = EV2 (EV/output cable)
+   2 = IN1, 3 = IN2 (input/supply cable)
+ pin(decimal): which analog input this source is wired to
+   0 = unassigned (source disabled)
+   1 = PP_READ  (ADC2 on 328P / PB09 on SAMD)
+   2 = PP2_READ (ADC3 on 328P / PA04 on SAMD)
+   Only two of the four sources can be assigned at once - there are only two
+   inputs. Nothing stops two sources sharing an input; they will simply read
+   the same voltage through their own calibration.
+   IMPORTANT: pin 1 is shared with the proximity pilot. Assigning any source
+   to pin 1 automatically disables PP auto ampacity ($FF P 0), and enabling
+   PP auto ampacity automatically unassigns every source on pin 1. The two
+   functions cannot both own that pin.
+ r25(decimal): NTC nominal resistance at 25C, in ohms. range 100-65535.
+ beta(decimal): NTC beta coefficient. range 1000-6000.
+ offset(decimal, signed): calibration offset added to the computed reading,
+   in 10ths of a degree Celsius. range -2000..2000.
+ panic(decimal): shutdown threshold in 10ths of a degree Celsius. range
+   300-1500. When any assigned source reaches its threshold the EVSE enters
+   the EVSE_STATE_OVER_TEMPERATURE fault state.
+ defaults (Phoenix Contact NACS cable, 10k NTC): r25=10000 beta=3443
+   offset=0 panic=900. beta 3443 reproduces the datasheet's 1266 ohms at 90C,
+   which is that cable's recommended shut-off temperature.
+ response:
+   $OK - accepted and saved to EEPROM
+   $NK - bad idx/pin, or a value out of range
+ $SN 0 2 10000 3443 0 900 - EV1 on PP2_READ, stock Phoenix Contact NACS cable
+ $SN 0 0                  - unassign EV1
 
 SR n 0|1 - enable/disable relay output (saved to EEPROM, applied at boot)
  n: 1=DC relay 1, 2=DC relay 2, 3=AC relay
@@ -358,6 +398,28 @@ GI - get MCU ID - requires MCU_ID_LEN to be defined
 GM - get voltMeter settings
  response: $OK voltcalefactor voltoffset
  $GM^2E
+
+GN - get cable temperatures, or one source's configuration
+     (requires CABLE_TEMPERATURE_MONITORING)
+ two forms:
+  $GN     - read all four temperatures
+    response: $OK ev1 ev2 in1 in2
+    all in 10ths of a degree Celsius, or one of these sentinels:
+      -2560 = source unassigned, or the feature is disabled ($FF C 0)
+      -2561 = open circuit - no cable plugged in, or a disconnected/broken
+              thermistor. Also reported below about -40C, where the divider
+              sits within an ADC count or two of the rail and a very cold
+              cable cannot be told apart from an open one.
+      -2562 = shorted thermistor or wiring
+    n.b. neither -2561 nor -2562 faults the EVSE. A cable that is simply
+    unplugged reads open, so an open reading cannot be treated as an error;
+    a hard short is reported for diagnosis rather than shutdown. Only a
+    valid reading at or above the source's panic threshold trips a fault.
+    $GN^32
+  $GN idx - read one source's configuration (idx as for $SN)
+    response: $OK pin r25 beta offset panic
+    values as documented under $SN
+    $GN 0
 
 GO get Overtemperature threshold
  response: $OK panicthresh
@@ -491,7 +553,11 @@ Z0 closems holdpwm
 // MCU_ID_LEN is 16, so that is 2*16+1 = 33 bytes and the historic 32-byte
 // buffer overflowed by one, corrupting the adjacent bufCnt member. Size
 // per target so AVR RAM cost stays zero.
-#ifdef TARGET_SAMD
+// The longest inbound command is likewise sized here. With
+// CABLE_TEMPERATURE_MONITORING that is the 6-argument form of $SN, whose
+// worst case is "$SN 3 2 65535 6000 -2000 1500 :XX^XX" = 36 chars + NUL, so
+// AVR needs the larger buffer too.
+#if defined(TARGET_SAMD) || defined(CABLE_TEMPERATURE_MONITORING)
 #define ESRAPI_BUFLEN 40
 #else
 #define ESRAPI_BUFLEN 32

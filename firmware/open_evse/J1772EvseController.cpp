@@ -1850,6 +1850,17 @@ if (TempChkEnabled()) {
 }
 #endif // TEMPERATURE_MONITORING
 
+#ifdef CABLE_TEMPERATURE_MONITORING
+// Cable NTC over-temperature drops into the same fault state as the
+// enclosure sensors. Gated on its own enable ($FF C) rather than $FF T,
+// since it is separate hardware with its own per-source thresholds.
+if (g_CableTempMonitor.OverTemperature()) {
+  tmpevsestate = EVSE_STATE_OVER_TEMPERATURE;
+  m_EvseState = EVSE_STATE_OVER_TEMPERATURE;
+  nofault = 0;
+}
+#endif // CABLE_TEMPERATURE_MONITORING
+
  uint8_t prevpilotstate = m_PilotState;
  uint8_t tmppilotstate = EVSE_STATE_UNKNOWN;
 
