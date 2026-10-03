@@ -524,13 +524,27 @@ void J1772EVSEController::chargingOn()
   m_ChargeOnTimeMS = millis();
 }
 
+#ifdef RELAY_ZC_SWITCH
+void J1772EVSEController::FlushDeferredEepromWrites()
+{
+  if (m_RelayHotSwitchCntDirty) {
+    m_RelayHotSwitchCntDirty = 0;
+    eeprom_write_word((uint16_t*)EOFS_RELAY_HOTSWITCH_CNT,m_RelayHotSwitchCnt);
+  }
+}
+#else
+void J1772EVSEController::FlushDeferredEepromWrites() {}
+#endif // RELAY_ZC_SWITCH
+
 void J1772EVSEController::chargingOff(uint8_t emergency)
 {
 #ifdef RELAY_ZC_SWITCH
   uint8_t wasOn = chargingIsOn();
   uint8_t hotOpen = 0;
+  uint8_t deferHotSwitchCnt = 0;
   if (wasOn) {
     if (!emergency && RelayZCSwitchEnabled()) {
+      // Deliberate wait for a current zero, so blocking here is the point.
 #ifdef AMMETER
       hotOpen = waitCurrentZero();
       if (hotOpen && (m_RelayHotSwitchCnt < 0xfffe)) {
@@ -540,15 +554,26 @@ void J1772EVSEController::chargingOff(uint8_t emergency)
       zcWaitRelayOpen();
     }
     else {
-      // emergency open, or ZC switching disabled: always a hot break
+      // Emergency open (GFI trip, overcurrent), or ZC switching disabled:
+      // always a hot break.
+      //
+      // NOTHING may run here before the coil is released below. This path is
+      // reached from gfi_isr() -> SetGfiTripped() -> chargingOff(1), so
+      // anything done first is added directly to GFI trip latency, in ISR
+      // context. It previously did both of the worst possible things:
+      //   - readAmmeter(), which spins on millis() for
+      //     CURRENT_SAMPLE_INTERVAL (35) ms, and
+      //   - eeprom_write_word(), which on SAMD is an I2C transaction to an
+      //     external EEPROM (SparkFun ExternalEEPROM), not an internal store
+      //     like AVR's - so it is both far slower and dependent on
+      //     interrupts that cannot run while we are inside this ISR.
+      // Both are now deferred to after the open / out of the ISR entirely.
       hotOpen = 1;
+      deferHotSwitchCnt = 1;
 #ifdef AMMETER
-      readAmmeter();
-      m_LastRelayOpenCurrentMa = (int32_t)m_AmmeterReading * m_CurrentScaleFactor - m_AmmeterCurrentOffset;
+      // Not measured: the measurement costs 35 ms of arcing to obtain.
+      m_LastRelayOpenCurrentMa = RELAY_OPEN_CURRENT_UNKNOWN;
 #endif // AMMETER
-      if (m_RelayHotSwitchCnt < 0xfffe) {
-        eeprom_write_word((uint16_t*)EOFS_RELAY_HOTSWITCH_CNT,++m_RelayHotSwitchCnt);
-      }
     }
   }
   unsigned long relayCmdMs = millis(); // coil is about to be released below
@@ -580,6 +605,13 @@ void J1772EVSEController::chargingOff(uint8_t emergency)
 #endif
 
 #ifdef RELAY_ZC_SWITCH
+  // The coil is released by this point, so the trip is done and the rest is
+  // bookkeeping. Count in RAM; the EEPROM write is deferred to the main loop
+  // because this may still be ISR context (see above).
+  if (deferHotSwitchCnt && (m_RelayHotSwitchCnt < 0xfffe)) {
+    m_RelayHotSwitchCnt++;
+    m_RelayHotSwitchCntDirty = 1;
+  }
   if (wasOn) {
     m_RelayOpenTransitMs = waitRelayTransit(relayCmdMs,0);
 #ifdef RELAY_HEALTH
@@ -1296,6 +1328,8 @@ void J1772EVSEController::Init()
   if (m_RelayHotSwitchCnt == 0xffff) { // uninitialized EEPROM
     m_RelayHotSwitchCnt = 0;
   }
+  m_RelayHotSwitchCntDirty = 0;
+  m_LastRelayOpenCurrentMa = RELAY_OPEN_CURRENT_UNKNOWN;
 #endif // RELAY_ZC_SWITCH
 
 
@@ -1610,6 +1644,10 @@ void J1772EVSEController::Update(uint8_t forcetransition)
 
   unsigned long curms = millis();
   WDT_RESET();
+
+  // Persist anything an ISR-reachable path counted but could not write (see
+  // FlushDeferredEepromWrites). Main-loop context here, so writing is safe.
+  FlushDeferredEepromWrites();
 
   if (m_EvseState == EVSE_STATE_DISABLED) {
     m_PrevEvseState = m_EvseState; // cancel state transition
@@ -1946,11 +1984,42 @@ if (g_CableTempMonitor.OverTemperature()) {
     // debounce state transitions
     if (tmpevsestate != prevevsestate) {
       if (tmpevsestate != m_TmpEvseState) {
+        // reading disagreed with the last one - start the window over
         m_TmpEvseStateStart = curms;
+        m_TmpEvseStateCnt = 1;
       }
-      else if ((curms - m_TmpEvseStateStart) >= ((tmpevsestate == EVSE_STATE_A) ? DELAY_STATE_TRANSITION_A : DELAY_STATE_TRANSITION)) {
-        m_EvseState = tmpevsestate;
+      else {
+        if (m_TmpEvseStateCnt < 255) m_TmpEvseStateCnt++;
+
+        unsigned long reqms;
+        uint8_t reqcnt = 1;
+        if (tmpevsestate == EVSE_STATE_A) {
+          // unplug - must still be prompt, per spec
+          reqms = DELAY_STATE_TRANSITION_A;
+        }
+        else if ((prevevsestate == EVSE_STATE_C) &&
+                 ((tmpevsestate == EVSE_STATE_D) || (tmpevsestate == EVSE_STATE_B))) {
+          // Dropping out of an active charge into vent-required or connected.
+          // Require many agreeing reads over a long window: SAMD units have
+          // been reporting spurious vent-required mid-charge, and neither of
+          // these transitions is urgent enough to justify acting on a short
+          // run of samples. See DELAY_STATE_TRANSITION_FROM_C.
+          reqms = DELAY_STATE_TRANSITION_FROM_C;
+          reqcnt = STATE_TRANSITION_FROM_C_MIN_SAMPLES;
+        }
+        else {
+          reqms = DELAY_STATE_TRANSITION;
+        }
+
+        if (((curms - m_TmpEvseStateStart) >= reqms) && (m_TmpEvseStateCnt >= reqcnt)) {
+          m_EvseState = tmpevsestate;
+        }
       }
+    }
+    else {
+      // candidate agrees with the committed state again - drop any part-built
+      // case for leaving it, so a later glitch starts from scratch
+      m_TmpEvseStateCnt = 0;
     }
   } // nofault
 

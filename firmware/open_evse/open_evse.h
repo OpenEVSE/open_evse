@@ -42,7 +42,7 @@
 #define clrBits(flags,bits) (flags &= ~(bits))
 
 #ifndef VERSION
-#define VERSION "D9.4.0"
+#define VERSION "D9.4.1"
 #endif // !VERSION
 
 #include "Language_default.h"   //Default language should always be included as bottom layer
@@ -378,6 +378,11 @@ extern AutoCurrentCapacityController g_ACCController;
 // confirm the relay physically reached the commanded state, timed from when
 // the coil was driven. Diagnostic only - never blocks/gates charging logic.
 #define RELAY_TRANSIT_TIMEOUT_MS  300
+// m_LastRelayOpenCurrentMa value meaning "not measured". Used by the
+// emergency open path, which must release the relay coil immediately and so
+// cannot afford readAmmeter()'s CURRENT_SAMPLE_INTERVAL ms sampling window
+// first. Negative, so it can never be mistaken for a real reading.
+#define RELAY_OPEN_CURRENT_UNKNOWN (-1L)
 #endif // RELAY_ZC_SWITCH
 
 // RELAY_HEALTH - relay contact-life estimation, built on the RELAY_ZC_SWITCH
@@ -661,6 +666,21 @@ extern AutoCurrentCapacityController g_ACCController;
 // must transition to state A from contacts closed in < 100ms according to spec
 // but Leaf sometimes bounces from 3->1 so we will debounce it a little anyway
 #define DELAY_STATE_TRANSITION_A 25
+
+// Leaving an active charge (state C) for vent-required (D) or connected (B).
+// Deliberately much slower than DELAY_STATE_TRANSITION: neither is an
+// emergency - a genuine vent-required condition persists, and anything
+// actually urgent (GFI, diode failure, over-temperature, stuck relay) has its
+// own fault path that does NOT come through here - so a false positive from
+// pilot noise costs an interrupted charge session, while being slow costs
+// nothing. Unplug (C->A) is unaffected: it is matched earlier and keeps
+// DELAY_STATE_TRANSITION_A.
+#define DELAY_STATE_TRANSITION_FROM_C 2000
+// ...and require this many consecutive agreeing reads as well as the elapsed
+// time, so the transition cannot be satisfied by a couple of samples if
+// Update() happens to be running slowly. Each read is already a
+// PILOT_LOOP_CNT-sample min/max sweep inside ReadPilot().
+#define STATE_TRANSITION_FROM_C_MIN_SAMPLES 32
 
 // for ADVPWR
 #define GROUND_CHK_DELAY  1000 // delay after charging started to test, ms

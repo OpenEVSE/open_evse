@@ -195,7 +195,13 @@ class J1772EVSEController {
   uint16_t m_AcFreqX100; // measured AC frequency × 100 (e.g. 6012 = 60.12 Hz); 0 = not yet measured
   uint16_t m_CurrentZeroThresholdMa; // configurable via RAPI $SZ; mA below which the relay is opened at a current zero
   uint16_t m_RelayHotSwitchCnt; // cumulative count of relay opens where current never reached the zero threshold (arced/hot open)
-  int32_t  m_LastRelayOpenCurrentMa; // ammeter reading immediately before the last relay open, for relay-life estimation
+  // Set when m_RelayHotSwitchCnt has been bumped in RAM on a path that must
+  // not block - specifically the emergency open reached from gfi_isr(). The
+  // EEPROM write is an I2C transaction to an external device on SAMD, which
+  // has no business running in an ISR ahead of releasing the relay coil.
+  // Flushed from the main loop by FlushDeferredEepromWrites().
+  volatile uint8_t m_RelayHotSwitchCntDirty;
+  int32_t  m_LastRelayOpenCurrentMa; // ammeter reading immediately before the last relay open, for relay-life estimation (RELAY_OPEN_CURRENT_UNKNOWN on an emergency open - not measured, see chargingOff())
   uint16_t m_RelayCloseTransitMs; // last measured command-to-physically-closed time (RELAY_TRANSIT_TIMEOUT_MS if unmeasured/timed out)
   uint16_t m_RelayOpenTransitMs;  // last measured command-to-physically-open time (RELAY_TRANSIT_TIMEOUT_MS if unmeasured/timed out)
 #endif
@@ -208,6 +214,10 @@ class J1772EVSEController {
   uint8_t m_TmpPilotState;
   uint8_t m_PilotState;
   unsigned long m_TmpEvseStateStart;
+  // consecutive Update() passes that have agreed on m_TmpEvseState, saturating
+  // at 255. Paired with m_TmpEvseStateStart so a transition can require both a
+  // minimum elapsed time and a minimum number of reads.
+  uint8_t m_TmpEvseStateCnt;
   unsigned long m_TmpPilotStateStart;
   uint8_t m_MaxHwCurrentCapacity; // max L2 amps that can be set
   uint8_t m_CurrentCapacity; // max amps we can output
@@ -379,6 +389,10 @@ public:
     eeprom_write_word((uint16_t*)EOFS_CURRENT_ZERO_THRESHOLD_MA,ma);
   }
   uint16_t GetRelayHotSwitchCnt() { return m_RelayHotSwitchCnt; }
+  // Persist any counter bumped on a no-blocking path (see
+  // m_RelayHotSwitchCntDirty). Must be called from the main loop only, never
+  // from an ISR. Cheap no-op when nothing is pending.
+  void FlushDeferredEepromWrites();
   int32_t GetLastRelayOpenCurrentMa() { return m_LastRelayOpenCurrentMa; }
   uint16_t GetRelayCloseTransitMs() { return m_RelayCloseTransitMs; }
   uint16_t GetRelayOpenTransitMs() { return m_RelayOpenTransitMs; }
