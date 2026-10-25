@@ -549,15 +549,21 @@ Z0 closems holdpwm
 
 // buffer[] holds an inbound RAPI command and is reused to build the
 // outbound response text. The longest response text is $GI (get MCU id),
-// whose #else branch writes 2*MCU_ID_LEN hex chars plus a NUL. On SAMD
-// MCU_ID_LEN is 16, so that is 2*16+1 = 33 bytes and the historic 32-byte
-// buffer overflowed by one, corrupting the adjacent bufCnt member. Size
-// per target so AVR RAM cost stays zero.
+// whose #else branch writes 2*MCU_ID_LEN hex chars plus a NUL. With a
+// 16-byte MCU id that is 2*16+1 = 33 bytes and the historic 32-byte buffer
+// overflowed by one, corrupting the adjacent bufCnt member.
+//
+// Size from the MCU id length rather than the target name, so any target
+// inherits the right buffer automatically. The values are unchanged from
+// when this was keyed on TARGET_SAMD: a 16-byte id selects 40, a 10-byte
+// id selects 32, so AVR RAM cost stays zero (ESRAPI_BUFLEN sizes three
+// buffers there -- buffer[], g_rapiSerialBuffer and g_rapiI2ClBuffer).
 // The longest inbound command is likewise sized here. With
 // CABLE_TEMPERATURE_MONITORING that is the 6-argument form of $SN, whose
 // worst case is "$SN 3 2 65535 6000 -2000 1500 :XX^XX" = 36 chars + NUL, so
 // AVR needs the larger buffer too.
-#if defined(TARGET_SAMD) || defined(CABLE_TEMPERATURE_MONITORING)
+#define ESRAPI_GI_RESPLEN (2*MCU_ID_LEN + 1)
+#if (defined(MCU_ID_LEN) && (ESRAPI_GI_RESPLEN > 32)) || defined(CABLE_TEMPERATURE_MONITORING)
 #define ESRAPI_BUFLEN 40
 #else
 #define ESRAPI_BUFLEN 32

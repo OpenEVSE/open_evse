@@ -300,6 +300,16 @@ void TempMonitor::Read()
 #endif // OPENEVSE_2
 #endif // HAVE_RTC
 
+#ifdef TARGET_NATIVE
+    // The host has no I2C bus, so a driver supplies the readings instead.
+    {
+      int16_t t;
+      if (nativeTemperature(NATIVE_TEMP_MCP9808, &t)) m_MCP9808_temperature = t;
+      if (nativeTemperature(NATIVE_TEMP_DS3231, &t)) m_DS3231_temperature = t;
+      if (nativeTemperature(NATIVE_TEMP_TMP007, &t)) m_TMP007_temperature = t;
+    }
+#endif // TARGET_NATIVE
+
     m_LastUpdate = curms;
   }
 }

@@ -370,6 +370,12 @@ public:
   uint8_t RelayDC2Enabled() { return !(m_relayFlags & ERELAYF_DC2_DISABLED); }
   uint8_t RelayACEnabled()  { return !(m_relayFlags & ERELAYF_AC_DISABLED); }
 
+  // Persist any counter bumped on a no-blocking path (see
+  // m_RelayHotSwitchCntDirty). Must be called from the main loop only, never
+  // from an ISR. Cheap no-op when nothing is pending. Declared for every
+  // build: without RELAY_ZC_SWITCH it is an empty stub.
+  void FlushDeferredEepromWrites();
+
   void SetHardFault() { setVFlags(ECVF_HARD_FAULT); }
   void ClrHardFault() { clrVFlags(ECVF_HARD_FAULT); }
   int8_t InHardFault() { return vFlagIsSet(ECVF_HARD_FAULT); }
@@ -389,10 +395,6 @@ public:
     eeprom_write_word((uint16_t*)EOFS_CURRENT_ZERO_THRESHOLD_MA,ma);
   }
   uint16_t GetRelayHotSwitchCnt() { return m_RelayHotSwitchCnt; }
-  // Persist any counter bumped on a no-blocking path (see
-  // m_RelayHotSwitchCntDirty). Must be called from the main loop only, never
-  // from an ISR. Cheap no-op when nothing is pending.
-  void FlushDeferredEepromWrites();
   int32_t GetLastRelayOpenCurrentMa() { return m_LastRelayOpenCurrentMa; }
   uint16_t GetRelayCloseTransitMs() { return m_RelayCloseTransitMs; }
   uint16_t GetRelayOpenTransitMs() { return m_RelayOpenTransitMs; }
