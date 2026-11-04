@@ -19,6 +19,13 @@
 
 #define GetVerStr(s) strcpy(s,VERSION)
 
+class AutoCriticalSection {
+  uint32_t primask;
+public:
+  AutoCriticalSection() { primask = __get_PRIMASK(); __disable_irq(); }
+  ~AutoCriticalSection() { __set_PRIMASK(primask); }
+};
+
 void wdt_disable();
 
 #ifdef WATCHDOG

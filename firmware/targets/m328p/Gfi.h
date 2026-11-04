@@ -24,10 +24,10 @@
 
 class Gfi {
   DigitalPin pin;
-  uint8_t m_GfiFault;
+  volatile uint8_t m_GfiFault;
 #ifdef GFI_SELFTEST
-  uint8_t testSuccess;
-  uint8_t testInProgress;
+  volatile uint8_t testSuccess;
+  volatile uint8_t testInProgress;
 #endif // GFI_SELFTEST
 public:
 #ifdef GFI_SELFTEST

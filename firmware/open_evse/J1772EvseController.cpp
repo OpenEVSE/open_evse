@@ -429,25 +429,23 @@ void J1772EVSEController::chargingOn()
 #ifdef RELAY_ZC_SWITCH
   if (hasCGMI() && RelayZCSwitchEnabled()) zcWaitRelayClose();
 #endif
-  // turn on charging current
+  {
+#ifdef GFI
+    // Do not let a trip between the fault check and an output write reclose a relay.
+    AutoCriticalSection acs;
+    if (m_Gfi.Fault()) return;
+#endif
+    // turn on charging current
 #ifdef OEV6
-  if (isV6()) {
+    if (isV6()) {
 #ifdef RELAY_PWM
 //    Serial.print("\nrelayCloseMs: ");Serial.println(m_relayCloseMs);
 //    Serial.print("relayHoldPwm: ");Serial.println(m_relayHoldPwm);
-    // turn on charging pin to close relay
-    if (RelayDC1Enabled()) digitalWrite(V6_CHARGING_PIN,HIGH);
-    if (RelayDC2Enabled()) digitalWrite(V6_CHARGING_PIN2,HIGH);
-    delay(m_relayCloseMs);
-    // switch to PWM to hold closed
-    if (RelayDC1Enabled()) analogWrite(V6_CHARGING_PIN,m_relayHoldPwm);
-    if (RelayDC2Enabled()) analogWrite(V6_CHARGING_PIN2,m_relayHoldPwm);
-#else // !RELAY_PWM
-    if (RelayDC1Enabled()) digitalWrite(V6_CHARGING_PIN,HIGH);
-    if (RelayDC2Enabled()) digitalWrite(V6_CHARGING_PIN2,HIGH);
-#endif // RELAY_PWM
-  }
-  else {
+#endif
+      if (RelayDC1Enabled()) digitalWrite(V6_CHARGING_PIN,HIGH);
+      if (RelayDC2Enabled()) digitalWrite(V6_CHARGING_PIN2,HIGH);
+    }
+    else {
 #endif // OEV6
 #ifdef CHARGING_REG
     if (RelayDC1Enabled()) pinCharging.write(1);
@@ -456,24 +454,44 @@ void J1772EVSEController::chargingOn()
     if (RelayDC2Enabled()) pinCharging2.write(1);
 #endif // CHARGING2_REG
 #ifdef OEV6
-  }
+    }
 #endif // OEV6
-#ifdef CHARGINGAC_REG
-  if (RelayACEnabled()) pinChargingAC.write(1);
+  }
+
+#if defined(OEV6) && defined(RELAY_PWM)
+  // Keep interrupts enabled during the closing pulse.
+  if (isV6()) delay(m_relayCloseMs);
 #endif
 
-  setVFlags(ECVF_CHARGING_ON);
-  
-  if (vFlagIsSet(ECVF_SESSION_ENDED)) {
-    m_AccumulatedChargeTime = 0;
-    clrVFlags(ECVF_SESSION_ENDED);
-  }
-  else {
-    m_AccumulatedChargeTime += m_ElapsedChargeTime;
-    m_ElapsedChargeTime = 0;
-  }
+  {
+#ifdef GFI
+    AutoCriticalSection acs;
+    if (m_Gfi.Fault()) return;
+#endif
+#if defined(OEV6) && defined(RELAY_PWM)
+    if (isV6()) {
+      // switch to PWM to hold closed
+      if (RelayDC1Enabled()) analogWrite(V6_CHARGING_PIN,m_relayHoldPwm);
+      if (RelayDC2Enabled()) analogWrite(V6_CHARGING_PIN2,m_relayHoldPwm);
+    }
+#endif // OEV6 && RELAY_PWM
+#ifdef CHARGINGAC_REG
+    if (RelayACEnabled()) pinChargingAC.write(1);
+#endif
 
-  m_ChargeOnTimeMS = millis();
+    setVFlags(ECVF_CHARGING_ON);
+  
+    if (vFlagIsSet(ECVF_SESSION_ENDED)) {
+      m_AccumulatedChargeTime = 0;
+      clrVFlags(ECVF_SESSION_ENDED);
+    }
+    else {
+      m_AccumulatedChargeTime += m_ElapsedChargeTime;
+      m_ElapsedChargeTime = 0;
+    }
+
+    m_ChargeOnTimeMS = millis();
+  }
 }
 
 void J1772EVSEController::chargingOff(uint8_t emergency)
@@ -937,6 +955,11 @@ uint8_t J1772EVSEController::doPost()
       RelayOff = ReadACPins();
 
       // save state with Relay 1 on 
+      {
+#ifdef GFI
+      AutoCriticalSection acs;
+      if (m_Gfi.Fault()) return UD; // Update() handles the latched GFI fault
+#endif
 #ifdef OEV6
       if (isV6()) {
 	digitalWrite(V6_CHARGING_PIN,HIGH);
@@ -952,6 +975,7 @@ uint8_t J1772EVSEController::doPost()
 #ifdef CHARGINGAC_REG
       pinChargingAC.write(1);
 #endif
+      }
 
       wdt_delay(RelaySettlingTime);
       Relay1 = ReadACPins();
@@ -975,6 +999,11 @@ uint8_t J1772EVSEController::doPost()
       delay(RelaySettlingTime); //allow relay to fully open before running other tests
           
       // save state for Relay 2 on
+      {
+#ifdef GFI
+      AutoCriticalSection acs;
+      if (m_Gfi.Fault()) return UD;
+#endif
 #ifdef OEV6
       if (isV6()) {
 	digitalWrite(V6_CHARGING_PIN2,HIGH);
@@ -987,6 +1016,7 @@ uint8_t J1772EVSEController::doPost()
 #ifdef OEV6
       }
 #endif // OEV6
+      }
 
       delay(RelaySettlingTime);
       Relay2 = ReadACPins();
