@@ -54,6 +54,7 @@ void Gfi::Init(uint8_t v6)
 void Gfi::Reset()
 {
   WDT_RESET();
+  AutoCriticalSection acs;
 
 #ifdef GFI_SELFTEST
   testInProgress = 0;
@@ -104,7 +105,6 @@ uint8_t Gfi::SelfTest()
   wdt_delay(1000);
 #endif // OPENEVSE_2
 
-  m_GfiFault = 0;
   testInProgress = 0;
 
   return !testSuccess;
