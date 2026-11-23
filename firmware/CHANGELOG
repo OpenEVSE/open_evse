@@ -1,5 +1,23 @@
 Change Log
 
+20261123 D9.4.3
+- build: drop the m328p_core environment; rename m328p_LCD_WIFI to
+  m328p_core_lcd. CI now builds only m328p_core_lcd and samd.
+
+20261105 D9.4.2
+- SAMD GFI self test:
+  - stop tone() as soon as the trip is detected; it kept driving the test
+    winding for the rest of the 1 s window, so a post-"pass" pulse could trip
+    the real GFI path -> spurious GFCI fault
+  - restore the 1 s post-test settle delay (as on AVR)
+  - drive the GFI test pin (PA06) low at boot instead of leaving it floating
+  - enable strong drive (DRVSTR) on PA06 for more test-transistor base drive
+- RAPI $SC amps V: a volatile current may now exceed the saved (EEPROM)
+  current capacity, up to the hardware max. The saved value is the boot
+  default, not a ceiling, so the WiFi module can apply a temporary override
+  above it (openevse_esp32_firmware#1403). PP, temperature throttle and
+  heartbeat restore still cap at the saved value.
+
 20260722 SCL
 - SAMD:
   - GFI self test was failing sometimes -> replace self test tickling loop with PWM (tone())

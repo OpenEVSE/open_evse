@@ -28,8 +28,9 @@ jobs:
             mv "$image" "$board.$ext"
           done
         done
-        # Move bootloader binaries to the top level keeping their descriptive name
-        find artifacts -name "bootloader-*.bin" | while read -r image; do
+        # Move already-named images (e.g. m328p_core_lcd.hex) and bootloader
+        # binaries to the top level keeping their name
+        find artifacts \( -name "*.hex" -o -name "bootloader-*.bin" \) | while read -r image; do
           echo mv "$image" "$(basename "$image")"
           mv "$image" "$(basename "$image")"
         done

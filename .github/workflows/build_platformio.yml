@@ -12,16 +12,11 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - env: m328p_core
+          - env: m328p_core_lcd
             python: 3.x
             platformio: 6.1.5
             arch: avr
-            artifact: firmware.hex
-          - env: m328p_LCD_WIFI
-            python: 3.x
-            platformio: 6.1.5
-            arch: avr
-            artifact: firmware.hex
+            artifact: m328p_core_lcd.hex
           - env: samd
             python: 3.x
             platformio: 6.1.5
@@ -68,6 +63,8 @@ jobs:
         HEX=.pio/build/${{ matrix.env }}/firmware.hex
 
         source ci/info_common.sh info.json
+
+        cp $HEX .pio/build/${{ matrix.env }}/${{ matrix.artifact }}
 
     - name: Get build info (SAMD)
       if: matrix.arch == 'samd'
