@@ -93,7 +93,12 @@ uint8_t Gfi::SelfTest()
     if (!pin.read()) break;
     delay(50);
   }
-  if (i == 40) return 3;
+  if (i == 40) {
+    // MUST clear testInProgress on every exit: while it is set, gfi_isr()
+    // treats a real ground fault as "test success" and does NOT trip.
+    testInProgress = 0;
+    return 3;
+  }
 
 #ifndef OPENEVSE_2
   // sometimes getting spurious GFI faults when testing just before closing

@@ -432,6 +432,8 @@ public:
     return m_CurrentCapacity; 
   }
   uint8_t GetMaxCurrentCapacity();
+  // nosave: 0 = save to EEPROM, 1 = volatile capped at the EEPROM value,
+  // 2 = volatile override capped only at the hardware max ($SC amps V)
   int SetCurrentCapacity(uint8_t amps,uint8_t updatelcd=0,uint8_t nosave=0);
 
   time_t GetElapsedChargeTime() { 
@@ -517,6 +519,16 @@ public:
     return (m_wFlags & ECF_GFI_TEST_DISABLED) ? 0 : 1;
   }
   void EnableGfiSelfTest(uint8_t tf);
+#ifdef GFI_SELFTEST_DIAG
+  void GetGfiSelfTestDiag(char *buf) { m_Gfi.GetDiag(buf); }
+  // run the GFI self test on demand ($FQ). Refused (-1) while the relay is
+  // closed or a GFI fault is active (a passing test clears m_GfiFault and
+  // would mask a real fault); otherwise returns Gfi::SelfTest()'s code.
+  int8_t RunGfiSelfTest() {
+    if (chargingIsOn() || m_Gfi.Fault()) return -1;
+    return (int8_t)m_Gfi.SelfTest();
+  }
+#endif // GFI_SELFTEST_DIAG
 #else // !GFI_SELFTEST
   uint8_t GfiSelfTestEnabled() { return 0; }
   void EnableGfiSelfTest(uint8_t tf) {}

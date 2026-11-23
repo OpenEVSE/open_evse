@@ -327,6 +327,19 @@ int EvseRapiProcessor::processCmd()
       // else: refuse - EV connected, unsafe to cycle the relay under load
       break;
 #endif // ADVPWR
+#ifdef GFI_SELFTEST_DIAG
+    case 'Q': // run GFI self test now; read the details with $GQ
+      {
+        int8_t r = g_EvseController.RunGfiSelfTest();
+        if (r >= 0) {
+          sprintf(buffer,"%d",(int)r);
+          bufCnt = 1;
+          rc = 0;
+        }
+        // else: refuse - relay closed or GFI fault active
+      }
+      break;
+#endif // GFI_SELFTEST_DIAG
     case 'F': // enable/disable feature
       if (tokenCnt == 3) {
 	u1.u8 = (uint8_t)(*tokens[2] - '0');
@@ -532,8 +545,10 @@ int EvseRapiProcessor::processCmd()
 	}
 	else {
 	  if (tokenCnt == 3) {
-	    // just make volatile no matter what character specified
-	    u1.u8 = 1; // nosave = 1
+	    // just make volatile no matter what character specified.
+	    // A volatile override may exceed the EEPROM default, up to
+	    // the hardware max (nosave = 2).
+	    u1.u8 = 2;
 	  }
 	  else {
 	    u1.u8 = 0; // nosave = 0
@@ -940,6 +955,13 @@ int EvseRapiProcessor::processCmd()
       rc = 0;
       break;
 #endif // KWH_RECORDING
+#ifdef GFI_SELFTEST_DIAG
+    case 'Q': // get last GFI self test diagnostics
+      g_EvseController.GetGfiSelfTestDiag(buffer);
+      bufCnt = 1;
+      rc = 0;
+      break;
+#endif // GFI_SELFTEST_DIAG
     case 'V': // get version
       GetVerStr(buffer);
       strcat(buffer," ");

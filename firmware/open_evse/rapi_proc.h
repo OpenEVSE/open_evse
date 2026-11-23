@@ -138,6 +138,12 @@ FK - run stucK relay recovery cycle manually (requires ADVPWR)
  case (3 rounds x 5 toggles x up to 2s on+off, plus zero-cross/transit
  overhead) before the response comes back.
  $FK*xx
+FQ - run GFI self test now (SAMD only, GFI_SELFTEST_DIAG)
+ response: $OK result   (0=pass 1=no trip 2=GFI pin high before test
+                         3=GFI pin stuck high after test)
+ NAK'd while the relay is closed or a GFI fault is active. Blocking:
+ ~2-5 s. Does not change EVSE state. Details via $GQ.
+ $FQ*xx
 FO set Overtemperature threshold
  $FO panicthresh
  panicthresh in 10ths of a degree Celsius
@@ -219,7 +225,10 @@ SC amps [V|M]- set current capacity
    ampsset: the resultant current capacity
    default action is to save new current capacity to EEPROM for the currently active service level.
    if V is specified, then new current capacity is volatile, and will be
-     reset to previous value at next reboot
+     reset to previous value at next reboot. A volatile value may exceed
+     the saved (EEPROM) current capacity, up to the maximum hardware
+     current capacity; the saved value is the boot default, not a ceiling
+     (D9.4.2+; earlier versions capped V at the saved value)
    if M is specified, sets maximum L2 current capacity for the unit and writes
      to EEPROM. subsequent calls the $SC cannot exceed value set bye $SC M
      the value cannot be changed/erased via RAPI commands. Subsequent calls
@@ -434,6 +443,19 @@ GP - get temPerature (v1.0.3+)
  all temperatures are in 10th's of a degree Celcius
  if any temperature sensor is not installed, its return value is -2560
  $GP^33
+
+GQ - get last GFI self test diagnostics (SAMD only, GFI_SELFTEST_DIAG)
+ response: $OK result pinbefore edges firstedgems highsamples samples clearms
+ result - last self test code (0=pass 1=no trip 2=pin high before
+          3=pin stuck high after, 255=never run/didn't finish)
+ pinbefore - GFI pin level when the test was entered (should be 0)
+ edges - rising edges the GFI ISR saw while the test was in progress
+ firstedgems - ms from test current start to first edge (65535=none)
+ highsamples/samples - 1 ms polls of the GFI pin that read HIGH while
+          test current flowed / total polls. edges=0 with highsamples>0
+          means the GFI output fired but the interrupt didn't.
+ clearms - ms for GFI pin to go low after test current stopped (65535=never)
+ $GQ*xx
 
 GS - get state
  response: $OK evsestate elapsed pilotstate vflags

@@ -2510,8 +2510,14 @@ int J1772EVSEController::SetCurrentCapacity(uint8_t amps,uint8_t updatelcd,uint8
   uint8_t maxcurrentcap = (GetCurSvcLevel() == 1) ? MAX_CURRENT_CAPACITY_L1 : m_MaxHwCurrentCapacity;
 
   if (nosave) {
-    // temporary amps can't be > max set in EEPROM
-    maxcurrentcap = GetMaxCurrentCapacity();
+    // nosave == 1: internal temporary amps (PP, temperature throttle,
+    //   heartbeat restore) can't be > the default set in EEPROM.
+    // nosave == 2: a volatile override from RAPI ($SC amps V) may exceed
+    //   the EEPROM default, up to the hardware / service level maximum.
+    //   The EEPROM value is the boot default, not the ceiling.
+    if (nosave == 1) {
+      maxcurrentcap = GetMaxCurrentCapacity();
+    }
 
 #ifdef PP_AUTO_AMPACITY
   if ((GetState() >= EVSE_STATE_B) && (GetState() <= EVSE_STATE_C)) {
