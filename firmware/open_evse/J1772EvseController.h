@@ -280,7 +280,7 @@ class J1772EVSEController {
   uint8_t doPost();
   uint8_t RelayIsStuck(uint8_t acpinstate); // true if acpinstate reads as contacts still closed w/ relay commanded open
 #endif // ADVPWR
-  void chargingOn();
+  uint8_t chargingOn(uint8_t recoveryGuard=0); // see .cpp; returns 1 if the coil was driven
   void chargingOff(uint8_t emergency = 0);
 #ifdef RELAY_ZC_SWITCH
   void zcWaitRelay(uint8_t advanceMs);
@@ -649,14 +649,16 @@ int GetHearbeatTrigger();
   // on/off toggles per round (each toggle shorter than the last), for up to
   // STUCK_RELAY_RECOVERY_ROUNDS rounds, re-testing the contacts after each
   // round. Callers must still check there's no EV connected before calling.
-  // As a backstop it also re-reads the pilot before every close and stops,
-  // relay open, if an EV appears or a GFI fault latches; it refuses outright
+  // As a backstop it re-reads the pilot at every coil write and throughout
+  // each closed hold, and stops, relay open, if an EV appears or a GFI fault
+  // latches (the GFI check is atomic with the coil write); it refuses outright
   // (without counting an attempt) when the pilot is N12, where an EV can't
   // be detected. Returns 1 if the contacts tested free afterward, 0 if still
   // stuck, refused or abandoned. Otherwise counts as one attempt in
   // GetStuckRelayRecoveryCnt(), regardless of outcome.
   uint8_t AttemptStuckRelayRecovery();
   uint8_t recoveryGfiFault();
+  uint8_t recoveryEvPresent();
 #endif // ADVPWR
 
 #ifdef STATE_TRANSITION_REQ_FUNC

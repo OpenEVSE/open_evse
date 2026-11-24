@@ -74,11 +74,28 @@ valid, and all 3 are fixed in the follow-up commit.
 | Finding | Verdict | Fix |
 |---|---|---|
 | `docs/pr60_coderabbit_response.md:20` — the recovery EV check is blind with the pilot at N12 | **Valid.** `Disable()` sets the pilot to N12, and `ReadPilot()` only updates `EvConnected()` when the pilot isn't N12. So `$FK` on a disabled EVSE could close the relay onto an EV plugged in since the last check. The automatic path never runs in N12, because `Update()` returns early when the EVSE is disabled. | `AttemptStuckRelayRecovery()` refuses up front if the pilot is N12, and doesn't count it as an attempt. `$FK` replies `$NK` in N12. The claim in the round-1 table is corrected, and the `$FK` docs are updated. |
-| `J1772EvseController.cpp:1043` — recovery keeps cycling after a GFI trip | **Valid.** The ISR opens the relay and latches `m_Gfi.Fault()`, but the loop's next `chargingOn()` closes the relay again before `Update()` sees the fault. A trip during `chargingOn()`'s zero-cross wait or close delay is released by the ISR, and then `chargingOn()` drives the coil again. | Recovery checks the GFI fault latch before each close, and on every loop iteration while the relay is closed, starting right after `chargingOn()` returns. On a fault it opens the relay and returns "not recovered". A trip that lands inside `chargingOn()` can still re-energize the relay for that call's own close delay (`m_relayCloseMs`) before it's opened again. That is the same window as the normal charging path, where `Update()` reopens the relay. The fault latch is `Gfi::Fault()`. `ECVF_GFI_TRIPPED` couldn't be used because it means "tripped since boot" and is never cleared. |
+| `J1772EvseController.cpp:1043` — recovery keeps cycling after a GFI trip | **Valid.** The ISR opens the relay and latches `m_Gfi.Fault()`, but the loop's next `chargingOn()` closes the relay again before `Update()` sees the fault. A trip during `chargingOn()`'s zero-cross wait or close delay is released by the ISR, and then `chargingOn()` drives the coil again. | Recovery checks the GFI fault latch before each close, and on every loop iteration while the relay is closed, starting right after `chargingOn()` returns. On a fault it opens the relay and returns "not recovered". *Round 2 left one gap, closed in round 3: a trip that landed inside `chargingOn()` could still re-energize the relay.* The fault latch is `Gfi::Fault()`. `ECVF_GFI_TRIPPED` couldn't be used because it means "tripped since boot" and is never cleared. |
 | `samd/Gfi.cpp:199` — an edge between the final read and clearing `testInProgress` is absorbed as success | **Valid.** | Clearing `testInProgress`, the final pin read and clearing `m_GfiFault` now happen in one block with interrupts off. A rising edge in that block is either seen by the read, which fails the test with `m_GfiFault` untouched, or stays pending and goes through the real trip path once interrupts come back on. The ATmega328P `Gfi::SelfTest()` had the same gap and never re-read the pin at all. It gets the same fix, though CodeRabbit didn't flag it. |
 
 Build check after round 2: `m328p_core_lcd`, `samd` and `samd_ice_dev` all
 build. ATmega328P flash is now 30138 / 32768 (92.0%); RAM is unchanged.
+
+## Round 3 (on `8ed7dd3`)
+
+CodeRabbit posted 2 more findings, both on the stuck-relay recovery close
+path. Both were valid, and both are fixed in the follow-up commit.
+
+| Finding | Verdict | Fix |
+|---|---|---|
+| `docs/pr60_coderabbit_response.md:20` — EV not re-checked after the zero-cross wait, or while the relay is closed | **Valid.** Recovery read the pilot, then `chargingOn()` waited for a zero crossing before driving the coil, with no pilot read in between. Nothing checked for an EV during the closed hold either. | `chargingOn()` takes an opt-in `recoveryGuard`, used only by recovery. It skips the zero-cross wait: with no EV there is no load, so close timing doesn't matter. It then samples the pilot immediately before the coil write. The closed-hold loop samples the pilot on every iteration. If an EV is present, recovery opens the relay and returns "not recovered". The check uses a new `recoveryEvPresent()`, which samples the pilot without the side effects of `ReadPilot()`. That matters because `ReadPilot()` drives the Mennekes lock, and `Lock()` blocks for 300 ms, which would hold the relay closed that much longer. `recoveryEvPresent()` treats N12 as "EV present". |
+| `J1772EvseController.cpp:1074` — a GFI trip during `chargingOn()` is followed by a coil write | **Valid.** A check after `chargingOn()` returns can't stop the coil being energized. | With the guard on, the GFI-latch check and the coil write run with interrupts masked, so a trip can't land between them. A trip after the write goes through the ISR, which releases the coil. On `RELAY_PWM` builds the check runs again, also masked, before the hold-PWM write, so a trip during the pull-in delay isn't followed by re-energizing the coil. If the guard refuses, `chargingOn()` returns 0 and leaves the relay open. Fault-free recovery closes the relay as before. |
+
+**Unchanged:** with the guard off, normal charging and POST behave as before.
+The only difference is that the coil pin writes now run with interrupts
+masked for a few microseconds.
+
+Build check after round 3: `m328p_core_lcd`, `samd` and `samd_ice_dev` all
+build. ATmega328P flash is now 30250 / 32768 (92.3%); RAM is unchanged.
 
 ## Files touched
 

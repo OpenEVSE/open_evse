@@ -7,9 +7,10 @@ Change Log
   confirmation, which spun on millis() inside gfi_isr() and could hang
   forever on a welded relay. RelayHealth hot-open damage and transit-baseline
   EEPROM writes are now deferred to the main loop (never from the ISR).
-- stuck-relay recovery: re-reads the pilot before every relay close and
-  abandons recovery, relay open, if an EV is plugged in or a GFI fault
-  latches mid-cycle. Refused ($FK NAKs) with the pilot at N12 (e.g.
+- stuck-relay recovery: checks the pilot at every coil write (no
+  zero-cross wait in between) and throughout each closed hold, and the GFI
+  fault latch atomically with the coil write; abandons recovery, relay
+  open, if an EV is plugged in or a GFI fault latches mid-cycle. Refused ($FK NAKs) with the pilot at N12 (e.g.
   disabled), where a connected EV can't be detected.
 - GFI self-test (AVR and SAMD): clearing testInProgress, the final
   output check and clearing the fault now happen with interrupts masked, so

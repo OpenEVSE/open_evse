@@ -464,10 +464,27 @@ void J1772EVSEController::ShowDisabledTests()
 }
 #endif //SHOW_DISABLED_TESTS
 
-void J1772EVSEController::chargingOn()
+// recoveryGuard: used only by AttemptStuckRelayRecovery(). Skips the
+// zero-cross wait (no EV means no load, so close timing buys nothing) and
+// refuses to drive the coil - returning 0, relay left open - if an EV is
+// connected or a GFI fault has latched. The GFI check and the coil write run
+// with interrupts masked so a trip can't land between them; on RELAY_PWM it
+// is repeated before the hold PWM, since a trip during the pull-in delay
+// releases the coil from the ISR and the hold write would re-energize it.
+// Returns 1 if the coil was driven. Normal callers (guard off) are
+// unaffected.
+uint8_t J1772EVSEController::chargingOn(uint8_t recoveryGuard)
 {
 #ifdef RELAY_ZC_SWITCH
-  if (hasCGMI() && RelayZCSwitchEnabled()) zcWaitRelayClose();
+  if (!recoveryGuard && hasCGMI() && RelayZCSwitchEnabled()) zcWaitRelayClose();
+#endif
+  if (recoveryGuard && recoveryEvPresent()) return 0;
+  noInterrupts();
+  if (recoveryGuard && recoveryGfiFault()) {
+    interrupts();
+    return 0;
+  }
+#ifdef RELAY_ZC_SWITCH
   unsigned long relayCmdMs = millis(); // coil is about to be driven below
 #endif
   // turn on charging current
@@ -479,7 +496,14 @@ void J1772EVSEController::chargingOn()
     // turn on charging pin to close relay
     if (RelayDC1Enabled()) digitalWrite(V6_CHARGING_PIN,HIGH);
     if (RelayDC2Enabled()) digitalWrite(V6_CHARGING_PIN2,HIGH);
+    interrupts(); // delay() needs them
     delay(m_relayCloseMs);
+    noInterrupts();
+    if (recoveryGuard && recoveryGfiFault()) {
+      // the ISR already released the coil (chargingOff(1)); keep it released
+      interrupts();
+      return 0;
+    }
     // switch to PWM to hold closed
     if (RelayDC1Enabled()) analogWrite(V6_CHARGING_PIN,m_relayHoldPwm);
     if (RelayDC2Enabled()) analogWrite(V6_CHARGING_PIN2,m_relayHoldPwm);
@@ -502,6 +526,7 @@ void J1772EVSEController::chargingOn()
 #ifdef CHARGINGAC_REG
   if (RelayACEnabled()) pinChargingAC.write(1);
 #endif
+  interrupts();
 
 #ifdef RELAY_ZC_SWITCH
   m_RelayCloseTransitMs = waitRelayTransit(relayCmdMs,1);
@@ -522,6 +547,7 @@ void J1772EVSEController::chargingOn()
   }
 
   m_ChargeOnTimeMS = millis();
+  return 1;
 }
 
 #ifdef RELAY_ZC_SWITCH
@@ -1050,27 +1076,23 @@ uint8_t J1772EVSEController::AttemptStuckRelayRecovery()
       if (toggleMs < STUCK_RELAY_RECOVERY_MIN_MS) toggleMs = STUCK_RELAY_RECOVERY_MIN_MS;
 
       // The caller only checked for an EV once, but this runs for tens of
-      // seconds. Re-read the pilot before every close and abandon recovery,
-      // relay open, the moment an EV appears - never energize the contacts
-      // into a just-connected vehicle. Reported as not recovered, so the
-      // caller falls through to its normal stuck-relay handling.
-      ReadPilot();
-      if (EvConnected()) return 0;
-
-      // A GFI trip mid-recovery opens the relay from the ISR and latches
-      // m_Gfi.Fault(), but nothing stops this loop closing it again before
-      // Update() handles the fault. Stop at the latch - checked before each
-      // close, while closed, and right after chargingOn() returns (a trip
-      // during its zero-cross wait / close delay is released by the ISR,
-      // but chargingOn() then drives the coil again). Relay left open;
-      // reported as not recovered.
-      if (recoveryGfiFault()) return 0;
-
-      chargingOn();
+      // seconds, and a GFI trip mid-recovery opens the relay from the ISR
+      // but doesn't stop this loop closing it again before Update() sees
+      // the fault. So abandon recovery - relay open, reported as not
+      // recovered, so the caller falls through to its normal stuck-relay
+      // handling - the moment an EV appears or the GFI fault latches:
+      //  - at the coil write: chargingOn(1) re-reads the pilot after
+      //    skipping the zero-cross wait, and checks the GFI latch atomically
+      //    with driving the coil (and again before the RELAY_PWM hold)
+      //  - throughout the closed hold, below
+      if (!chargingOn(1)) {
+        chargingOff(); // belt and braces: the coil is already released
+        return 0;
+      }
       unsigned long start = millis();
       do {
         WDT_RESET();
-        if (recoveryGfiFault()) {
+        if (recoveryEvPresent() || recoveryGfiFault()) {
           chargingOff();
           return 0;
         }
@@ -1641,6 +1663,22 @@ void J1772EVSEController::Init()
   m_HsLastPulse = millis();    //Set up the HS pulse interval start time as "now"
 #endif //HEARTBEAT_SUPERVISION
 
+}
+
+// Stuck-relay recovery's EV check: samples the pilot like ReadPilot() but
+// changes no state - in particular it doesn't drive the Mennekes lock, whose
+// Lock() blocks for 300 ms, which would hold the relay closed that much
+// longer after an EV appears. Treats N12 (connection undetectable) as an EV
+// present, the fail-safe answer.
+uint8_t J1772EVSEController::recoveryEvPresent()
+{
+  if (m_Pilot.GetState() == PILOT_STATE_N12) return 1;
+  uint16_t ph = 0;
+  for (int i=0;i < PILOT_LOOP_CNT;i++) {
+    uint16_t reading = adcPilot.read();
+    if (reading > ph) ph = reading;
+  }
+  return (ph < m_ThreshData.m_ThreshAB) ? 1 : 0;
 }
 
 void J1772EVSEController::ReadPilot(uint16_t *plow,uint16_t *phigh)
