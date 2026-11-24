@@ -42,7 +42,7 @@
 #define clrBits(flags,bits) (flags &= ~(bits))
 
 #ifndef VERSION
-#define VERSION "8.2.3"
+#define VERSION "D9.4.3"
 #endif // !VERSION
 
 #include "Language_default.h"   //Default language should always be included as bottom layer
@@ -126,6 +126,10 @@ extern bool g_hasCGMI;
 // auto detect ampacity by PP pin resistor
 // #define PP_AUTO_AMPACITY
 
+// monitor NTC thermistors in the EV/input cables via the PP/PP2 analog inputs
+// n.b. shares PP_READ with PP_AUTO_AMPACITY - see CableTempMonitor.h
+//#define CABLE_TEMPERATURE_MONITORING
+
 // charge for a specified amount of time and then stop
 #define TIME_LIMIT
 
@@ -195,6 +199,12 @@ extern AutoCurrentCapacityController g_ACCController;
 // if not defined, and TEMPERATURE_MONITORING is enabled, then only
 // TEMPERATURE_AMBIENT_PANIC is checked
 //#define TEMPERATURE_THROTTLING
+
+// CABLE_TEMPERATURE_MONITORING adds NTC thermistor monitoring of the EV
+// (output) and input (supply) cables on the PP/PP2 analog inputs. Entirely
+// separate from the enclosure sensors above: its own enable ($FF C), its own
+// per-source shutdown thresholds and its own RAPI commands ($SN/$GN).
+// n.b. PP_READ is shared with PP_AUTO_AMPACITY - only one may own it.
 
 
 //#define HEARTBEAT_SUPERVISION // Heartbeat Supervision support
@@ -352,9 +362,90 @@ extern AutoCurrentCapacityController g_ACCController;
 // -135) an idle ammeter computes 135 mA, so 100 could never be reached and the
 // wait always ran to the timeout. 0.2 A is still far below any level the
 // contacts care about.
+// default only - the effective value is configurable at runtime via RAPI
+// ($SZ) and persisted to EEPROM (EOFS_CURRENT_ZERO_THRESHOLD_MA); this is
+// just what a freshly-formatted EEPROM starts with. Some field units never
+// read below this compiled-in default (different ammeter offset/noise floor
+// than the SAMD example above), which stalls every non-emergency relay open
+// for the full CURRENT_ZERO_TIMEOUT_MS - $SZ lets those units be retuned
+// without a firmware rebuild.
 #define CURRENT_ZERO_THRESHOLD_MA 200
 #define CURRENT_ZERO_TIMEOUT_MS  1000  // ms; give up waiting for zero and open the relay anyway
+// upper bound accepted by $SZ - also keeps the stored value away from 0xffff,
+// which is reserved to mean "EEPROM unformatted, use the compiled-in default"
+#define CURRENT_ZERO_THRESHOLD_MAX_MA 5000
+// max ms to wait for the load-side AC-sense pin (RLY_TEST_PIN_OPEN) to
+// confirm the relay physically reached the commanded state, timed from when
+// the coil was driven. Diagnostic only - never blocks/gates charging logic.
+#define RELAY_TRANSIT_TIMEOUT_MS  300
+// m_LastRelayOpenCurrentMa value meaning "not measured". Used by the
+// emergency open path, which must release the relay coil immediately and so
+// cannot afford readAmmeter()'s CURRENT_SAMPLE_INTERVAL ms sampling window
+// first. Negative, so it can never be mistaken for a real reading.
+#define RELAY_OPEN_CURRENT_UNKNOWN (-1L)
 #endif // RELAY_ZC_SWITCH
+
+// RELAY_HEALTH - relay contact-life estimation, built on the RELAY_ZC_SWITCH
+// diagnostics above (hot/cold open classification, last-open current, and
+// coil transit timing) plus TEMPERATURE_MONITORING if available. Cumulative-
+// damage (Miner's rule) model - see RelayHealth.h for the derivation and
+// RAPI $GL/$FH for how it's surfaced/reset. Diagnostic only: never gates or
+// alters charging logic.
+#if defined(RELAY_ZC_SWITCH) && defined(AMMETER)
+#define RELAY_HEALTH
+#endif
+
+#ifdef RELAY_HEALTH
+// N_e: relay datasheet electrical life (cycles) at rated current I_r.
+// ADJUST to match your relay's datasheet - this default is a conservative
+// guess for a general-purpose 30A automotive-style contactor.
+#define RELAY_RATED_ELECTRICAL_LIFE_CYCLES 100000UL
+// N_m: relay datasheet mechanical life (cycles, no load). ADJUST to match
+// your relay's datasheet.
+#define RELAY_RATED_MECHANICAL_LIFE_CYCLES 10000000UL
+// I_r: relay datasheet rated current, amps. ADJUST to match your relay.
+#define RELAY_RATED_CURRENT_A 30
+// alpha_pf: load-character penalty applied to every hot switch. EV chargers
+// present a mildly non-resistive load (PFC front end) to the AC line - 1.20
+// is a modest default; raise it if field/datasheet data suggests otherwise.
+#define RELAY_HEALTH_LOAD_ALPHA_X100 120
+// alpha_T: temperature penalty, applied above this ambient knee (0.1C units,
+// read from the MCP9808 ambient sensor). No penalty at/below the knee.
+#define RELAY_HEALTH_TEMP_KNEE_C10 400 // 40.0C
+// +this (x100 scale) per 0.1C above the knee, e.g. 5 => +5x per 10C over
+#define RELAY_HEALTH_TEMP_SLOPE_X100_PER_C10 5
+#define RELAY_HEALTH_TEMP_ALPHA_MAX_X100 300 // cap alpha_T at 3.0x
+
+// coil drop-out (open) transit-time drift - early weld-onset warning
+// # of post-boot transit-time samples averaged to establish the baseline
+#define RELAY_HEALTH_TRANSIT_BASELINE_SAMPLES 8
+// live/baseline ratio (x100) at/above which TransitDriftWarning() trips
+#define RELAY_HEALTH_TRANSIT_WARN_RATIO_X100 150 // 1.5x
+
+// EEPROM wear mitigation: cold opens happen on every normal charging
+// session, unlike the rare hot-switch/fault events, so only persist the
+// cumulative count every N increments (losing up to N-1 counts across a
+// power loss is immaterial - see RelayHealth.h, the mechanical budget this
+// feeds is normally negligible relative to any realistic cycle count anyway)
+#define RELAY_HEALTH_COLD_CNT_EEPROM_BATCH 32
+
+// thermal index (deltaT / I^2, proportional to contact resistance) - only
+// meaningful with TEMPERATURE_MONITORING (MCP9808 ambient sensor)
+#ifdef TEMPERATURE_MONITORING
+// how often (ms) to take a fresh deltaT/I^2 sample while charging
+#define RELAY_HEALTH_THERMAL_WINDOW_MS (600000UL) // 10 min
+// minimum charging current (mA) required to take a sample - below this,
+// I^2 is too small for deltaT/I^2 to be anything but noise
+#define RELAY_HEALTH_THERMAL_MIN_CURRENT_MA 6000UL
+// # of early in-session samples averaged to establish the self-baseline H0
+#define RELAY_HEALTH_THERMAL_BASELINE_SAMPLES 4
+// live/self-baseline ratio (x100) thresholds
+#define RELAY_HEALTH_THERMAL_WATCH_RATIO_X100 150 // 1.5x
+#define RELAY_HEALTH_THERMAL_WARN_RATIO_X100  200 // 2.0x
+#endif // TEMPERATURE_MONITORING
+
+#include "RelayHealth.h"
+#endif // RELAY_HEALTH
 
 // OEV6 w/ CGMI - when power is loss, temporarily triggers NO GROUND fault
 // delay recording of NO GROUND fault to avoid recording this spurious fault
@@ -451,8 +542,22 @@ extern AutoCurrentCapacityController g_ACCController;
 // 10-byte MCU id needs only 33 for $GI, so the LCD-derived 34 still fits;
 // keep AVR unchanged so its RAM footprint does not grow. See the matching
 // #error guard in rapi_proc.cpp.
-#ifdef TARGET_SAMD
+//
+// With RELAY_HEALTH, $GL is the longest reply on every target. Its nine
+// fields at their widest are
+//   "100 65534 4294967295 65535 1 65535 65535 2 65534" = RAPI_GL_MAX_LEN (48)
+// so '$' + "OK" + ' ' (4) + 48 + " :XX" (4) + "^XX" + CR (4) + NUL (1) = 61.
+// That costs AVR ~25 bytes of RAM, which it has room for.
+#define RAPI_GL_MAX_LEN 48
+#if defined(RELAY_HEALTH)
+#define TMP_BUF_SIZE (4 + RAPI_GL_MAX_LEN + 4 + 4 + 1)
+#elif defined(TARGET_SAMD)
 #define TMP_BUF_SIZE 48
+#elif defined(CABLE_TEMPERATURE_MONITORING)
+// $GN reports four cable temperatures; its worst case is four 5-character
+// sentinels plus separators (23 chars), 2 longer than $GS, so the AVR buffer
+// grows by 2 bytes for builds that include the feature.
+#define TMP_BUF_SIZE ((LCD_MAX_CHARS_PER_LINE+1)*2 + 2)
 #else
 #define TMP_BUF_SIZE ((LCD_MAX_CHARS_PER_LINE+1)*2)
 #endif
@@ -540,6 +645,27 @@ extern AutoCurrentCapacityController g_ACCController;
 #define EOFS_RELAY_HOLD_PWM 38 // 1 byte
 #define EOFS_RELAY_FLAGS    39 // 1 byte - relay enable/disable bitmask (ERELAYF_xxx)
 
+// RELAY_ZC_SWITCH relay-life diagnostics
+#define EOFS_CURRENT_ZERO_THRESHOLD_MA 40 // 2 bytes - configurable relay-open current-zero threshold (mA); 0xffff = unformatted, use CURRENT_ZERO_THRESHOLD_MA default
+#define EOFS_RELAY_HOTSWITCH_CNT       42 // 2 bytes - cumulative count of relay opens where current never reached the zero threshold; 0xffff = unformatted, treat as 0
+
+// RELAY_HEALTH relay contact-life estimation (see RelayHealth.h)
+#define EOFS_RELAY_ELEC_DAMAGE_X1E6      44 // 4 bytes - Miner's-rule electrical-damage accumulator (millionths of rated electrical life consumed); 0xffffffff = unformatted, treat as 0
+#define EOFS_RELAY_COLD_OPEN_CNT         48 // 2 bytes - cumulative cold (non-arced) relay-open count; 0xffff = unformatted, treat as 0
+#define EOFS_RELAY_TRANSIT_BASELINE_X100   50 // 2 bytes - learned open-transit-time baseline (ms x100)
+#define EOFS_RELAY_TRANSIT_BASELINE_N      52 // 1 byte  - # samples averaged into the transit baseline so far, | RELAY_HEALTH_BASELINE_N_TAG
+#define EOFS_RELAY_THERMAL_BASELINE_X10000 53 // 2 bytes - self-learned thermal-index baseline H0 (deltaT/I^2 x10000)
+#define EOFS_RELAY_THERMAL_BASELINE_N      55 // 1 byte  - # samples averaged into the thermal baseline so far, | RELAY_HEALTH_BASELINE_N_TAG
+
+// stuck-relay auto-recovery
+#define EOFS_STUCK_RELAY_RECOVERY_CNT    56 // 2 bytes - cumulative count of stuck-relay recovery attempts run; 0xffff = unformatted, treat as 0
+
+// cable NTC thermistor temperature monitoring (CABLE_TEMPERATURE_MONITORING)
+#define EOFS_CABLE_TEMP_FLAGS 58 // 1 byte  - CTMF_ENABLED; 0xff = unformatted, feature off
+#define EOFS_CABLE_TEMP_CFG   59 // 4 sensors x CABLE_TEMP_CFG_EEPROM_SIZE (9) bytes = 36 bytes (59..94)
+                                 // per sensor: r25(2) beta(2) offset(2) panic(2) pin(1)
+// next free offset: 95
+
 #define EOFS_MAX_HW_CURRENT_CAPACITY 511 // 1 byte
 
 
@@ -550,10 +676,39 @@ extern AutoCurrentCapacityController g_ACCController;
 // but Leaf sometimes bounces from 3->1 so we will debounce it a little anyway
 #define DELAY_STATE_TRANSITION_A 25
 
+// Leaving an active charge (state C) for vent-required (D) or connected (B).
+// Deliberately much slower than DELAY_STATE_TRANSITION: neither is an
+// emergency - a genuine vent-required condition persists, and anything
+// actually urgent (GFI, diode failure, over-temperature, stuck relay) has its
+// own fault path that does NOT come through here - so a false positive from
+// pilot noise costs an interrupted charge session, while being slow costs
+// nothing. Unplug (C->A) is unaffected: it is matched earlier and keeps
+// DELAY_STATE_TRANSITION_A.
+#define DELAY_STATE_TRANSITION_FROM_C 2000
+// ...and require this many consecutive agreeing reads as well as the elapsed
+// time, so the transition cannot be satisfied by a couple of samples if
+// Update() happens to be running slowly. Each read is already a
+// PILOT_LOOP_CNT-sample min/max sweep inside ReadPilot().
+#define STATE_TRANSITION_FROM_C_MIN_SAMPLES 32
+
 // for ADVPWR
 #define GROUND_CHK_DELAY  1000 // delay after charging started to test, ms
 #define STUCK_RELAY_DELAY 1000 // delay after charging opened to test, ms
 #define RelaySettlingTime  250 // time for relay to settle in post, ms
+
+// Stuck-relay auto-recovery (ADVPWR only - needs the AC-sense pin to
+// re-test the contacts). Attempted once, automatically, whenever
+// EVSE_STATE_STUCK_RELAY is freshly entered with no EV connected (unsafe to
+// cycle the relay under load, so this is skipped otherwise and falls
+// straight through to the normal hard fault). Also runnable on demand via
+// RAPI $FK. A round is STUCK_RELAY_RECOVERY_CYCLES on/off toggles, each
+// shorter than the last; the contacts are re-tested after each round, for
+// up to STUCK_RELAY_RECOVERY_ROUNDS rounds.
+#define STUCK_RELAY_RECOVERY_CYCLES    5    // on/off toggles per round
+#define STUCK_RELAY_RECOVERY_ROUNDS    3    // rounds to attempt before giving up
+#define STUCK_RELAY_RECOVERY_START_MS  1000 // first toggle's on/off duration, ms
+#define STUCK_RELAY_RECOVERY_STEP_MS   200  // shorten by this much each toggle within a round
+#define STUCK_RELAY_RECOVERY_MIN_MS    200  // never shorten past this floor, ms
 
 // ACPINS sample interval - max number of ms to sample
 // used only when ADVPWR - for rectified MID400 chips which block
@@ -932,6 +1087,10 @@ public:
 #endif //TEMPERATURE_MONITORING_NY
 };
 #endif // TEMPERATURE_MONITORING
+
+// n.b. must precede J1772EvseController.h - its inline EnablePPAutoAmpacity()
+// reaches into g_CableTempMonitor to take PP_READ back
+#include "CableTempMonitor.h"
 
 #include "J1772Pilot.h"
 #include "J1772EvseController.h"

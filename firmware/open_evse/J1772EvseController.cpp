@@ -115,22 +115,33 @@ void J1772EVSEController::readAmmeter()
 }
 
 #ifdef RELAY_ZC_SWITCH
-// Wait for AC current amplitude to drop below CURRENT_ZERO_THRESHOLD_MA
-// (0.1 A) so the relay can be opened at a current zero. Polls readAmmeter()
+// Wait for AC current amplitude to drop below the configured zero threshold
+// (m_CurrentZeroThresholdMa, default CURRENT_ZERO_THRESHOLD_MA, tunable via
+// RAPI $SZ) so the relay can be opened at a current zero. Polls readAmmeter()
 // until the current falls below threshold or CURRENT_ZERO_TIMEOUT_MS elapses,
 // whichever comes first. The timeout guarantees the caller can proceed to open
 // the relay even if the measured current never reads below threshold (e.g. a
-// calibration offset that floors the computed current above it). WDT_RESET()
-// called each iteration. Emergency opens (chargingOff(1)) bypass this entirely.
-void J1772EVSEController::waitCurrentZero()
+// calibration offset that floors the computed current above it) - some field
+// units never satisfy the compiled-in default, which is what $SZ is for.
+// WDT_RESET() called each iteration. Emergency opens (chargingOff(1)) bypass
+// this entirely. Records the last-measured current in m_LastRelayOpenCurrentMa
+// regardless of outcome, for relay-life diagnostics ($GW). Returns 1 if the
+// relay is about to be opened "hot" (current never reached zero), else 0.
+uint8_t J1772EVSEController::waitCurrentZero()
 {
   unsigned long start = millis();
+  int32_t ma;
   do {
     WDT_RESET();
     readAmmeter();
-    int32_t ma = (int32_t)m_AmmeterReading * m_CurrentScaleFactor - m_AmmeterCurrentOffset;
-    if (ma < (int32_t)CURRENT_ZERO_THRESHOLD_MA) return;
+    ma = (int32_t)m_AmmeterReading * m_CurrentScaleFactor - m_AmmeterCurrentOffset;
+    if (ma < (int32_t)m_CurrentZeroThresholdMa) {
+      m_LastRelayOpenCurrentMa = ma;
+      return 0;
+    }
   } while ((millis() - start) < CURRENT_ZERO_TIMEOUT_MS);
+  m_LastRelayOpenCurrentMa = ma;
+  return 1;
 }
 
 // Measure AC frequency.  Stores the result (×100) in m_AcFreqX100 and sets
@@ -253,6 +264,32 @@ void J1772EVSEController::zcWaitRelay(uint8_t advanceMs)
 
 void J1772EVSEController::zcWaitRelayClose() { zcWaitRelay(RELAY_CLOSE_ADVANCE_MS); }
 void J1772EVSEController::zcWaitRelayOpen()  { zcWaitRelay(RELAY_OPEN_ADVANCE_MS); }
+
+// Relay-life diagnostic: times how long the relay physically takes to reach
+// the commanded state, measured from cmdStartMs (the moment the coil was
+// driven) until the load-side AC-sense pin (RLY_TEST_PIN_OPEN - WELD_DETECT
+// on SAMD) confirms the new contact position. Only meaningful on CGMI
+// hardware, where that pin tracks actual contact position independent of EV
+// load. Diagnostic only: never gates charging logic. Returns elapsed ms,
+// saturating at RELAY_TRANSIT_TIMEOUT_MS if the expected state is never
+// observed (also the "not measured" sentinel on non-CGMI/non-ADVPWR builds).
+uint16_t J1772EVSEController::waitRelayTransit(unsigned long cmdStartMs, uint8_t wantClosed)
+{
+#ifdef ADVPWR
+  if (hasCGMI()) {
+    uint8_t wantOpenBit = wantClosed ? 0 : RLY_TEST_PIN_OPEN;
+    unsigned long elapsed;
+    do {
+      WDT_RESET();
+      if ((ReadACPins() & RLY_TEST_PIN_OPEN) == wantOpenBit) {
+        return (uint16_t)(millis() - cmdStartMs);
+      }
+      elapsed = millis() - cmdStartMs;
+    } while (elapsed < RELAY_TRANSIT_TIMEOUT_MS);
+  }
+#endif // ADVPWR
+  return RELAY_TRANSIT_TIMEOUT_MS;
+}
 #endif // RELAY_ZC_SWITCH
 
 #define MA_PTS 32 // # points in moving average MUST BE power of 2
@@ -310,6 +347,9 @@ J1772EVSEController::J1772EVSEController() :
 #endif
 #ifdef RELAY_ZC_SWITCH
   m_AcFreqX100 = 0;
+  m_LastRelayOpenCurrentMa = 0;
+  m_RelayCloseTransitMs = 0;
+  m_RelayOpenTransitMs = 0;
 #endif
 }
 
@@ -424,10 +464,28 @@ void J1772EVSEController::ShowDisabledTests()
 }
 #endif //SHOW_DISABLED_TESTS
 
-void J1772EVSEController::chargingOn()
+// recoveryGuard: used only by AttemptStuckRelayRecovery(). Skips the
+// zero-cross wait (no EV means no load, so close timing buys nothing) and
+// refuses to drive the coil - returning 0, relay left open - if an EV is
+// connected or a GFI fault has latched. The GFI check and the coil write run
+// with interrupts masked so a trip can't land between them; on RELAY_PWM it
+// is repeated before the hold PWM, since a trip during the pull-in delay
+// releases the coil from the ISR and the hold write would re-energize it.
+// Returns 1 if the coil was driven. Normal callers (guard off) are
+// unaffected.
+uint8_t J1772EVSEController::chargingOn(uint8_t recoveryGuard)
 {
 #ifdef RELAY_ZC_SWITCH
-  if (hasCGMI() && RelayZCSwitchEnabled()) zcWaitRelayClose();
+  if (!recoveryGuard && hasCGMI() && RelayZCSwitchEnabled()) zcWaitRelayClose();
+#endif
+  if (recoveryGuard && recoveryEvPresent()) return 0;
+  noInterrupts();
+  if (recoveryGuard && recoveryGfiFault()) {
+    interrupts();
+    return 0;
+  }
+#ifdef RELAY_ZC_SWITCH
+  unsigned long relayCmdMs = millis(); // coil is about to be driven below
 #endif
   // turn on charging current
 #ifdef OEV6
@@ -438,7 +496,14 @@ void J1772EVSEController::chargingOn()
     // turn on charging pin to close relay
     if (RelayDC1Enabled()) digitalWrite(V6_CHARGING_PIN,HIGH);
     if (RelayDC2Enabled()) digitalWrite(V6_CHARGING_PIN2,HIGH);
+    interrupts(); // delay() needs them
     delay(m_relayCloseMs);
+    noInterrupts();
+    if (recoveryGuard && recoveryGfiFault()) {
+      // the ISR already released the coil (chargingOff(1)); keep it released
+      interrupts();
+      return 0;
+    }
     // switch to PWM to hold closed
     if (RelayDC1Enabled()) analogWrite(V6_CHARGING_PIN,m_relayHoldPwm);
     if (RelayDC2Enabled()) analogWrite(V6_CHARGING_PIN2,m_relayHoldPwm);
@@ -461,6 +526,14 @@ void J1772EVSEController::chargingOn()
 #ifdef CHARGINGAC_REG
   if (RelayACEnabled()) pinChargingAC.write(1);
 #endif
+  interrupts();
+
+#ifdef RELAY_ZC_SWITCH
+  m_RelayCloseTransitMs = waitRelayTransit(relayCmdMs,1);
+#endif
+#ifdef RELAY_HEALTH
+  g_RelayHealth.OnRelayClose();
+#endif
 
   setVFlags(ECVF_CHARGING_ON);
   
@@ -474,17 +547,65 @@ void J1772EVSEController::chargingOn()
   }
 
   m_ChargeOnTimeMS = millis();
+  return 1;
 }
+
+#ifdef RELAY_ZC_SWITCH
+void J1772EVSEController::FlushDeferredEepromWrites()
+{
+  if (m_RelayHotSwitchCntDirty) {
+    m_RelayHotSwitchCntDirty = 0;
+    eeprom_write_word((uint16_t*)EOFS_RELAY_HOTSWITCH_CNT,m_RelayHotSwitchCnt);
+  }
+#ifdef RELAY_HEALTH
+  g_RelayHealth.FlushDeferredEepromWrites();
+#endif
+}
+#else
+void J1772EVSEController::FlushDeferredEepromWrites() {}
+#endif // RELAY_ZC_SWITCH
 
 void J1772EVSEController::chargingOff(uint8_t emergency)
 {
 #ifdef RELAY_ZC_SWITCH
-  if (!emergency && chargingIsOn() && RelayZCSwitchEnabled()) {
+  uint8_t wasOn = chargingIsOn();
+  uint8_t hotOpen = 0;
+  uint8_t deferHotSwitchCnt = 0;
+  if (wasOn) {
+    if (!emergency && RelayZCSwitchEnabled()) {
+      // Deliberate wait for a current zero, so blocking here is the point.
 #ifdef AMMETER
-    waitCurrentZero();
-#endif
-    zcWaitRelayOpen();
+      hotOpen = waitCurrentZero();
+      if (hotOpen && (m_RelayHotSwitchCnt < 0xfffe)) {
+        eeprom_write_word((uint16_t*)EOFS_RELAY_HOTSWITCH_CNT,++m_RelayHotSwitchCnt);
+      }
+#endif // AMMETER
+      zcWaitRelayOpen();
+    }
+    else {
+      // Emergency open (GFI trip, overcurrent), or ZC switching disabled:
+      // always a hot break.
+      //
+      // NOTHING may run here before the coil is released below. This path is
+      // reached from gfi_isr() -> SetGfiTripped() -> chargingOff(1), so
+      // anything done first is added directly to GFI trip latency, in ISR
+      // context. It previously did both of the worst possible things:
+      //   - readAmmeter(), which spins on millis() for
+      //     CURRENT_SAMPLE_INTERVAL (35) ms, and
+      //   - eeprom_write_word(), which on SAMD is an I2C transaction to an
+      //     external EEPROM (SparkFun ExternalEEPROM), not an internal store
+      //     like AVR's - so it is both far slower and dependent on
+      //     interrupts that cannot run while we are inside this ISR.
+      // Both are now deferred to after the open / out of the ISR entirely.
+      hotOpen = 1;
+      deferHotSwitchCnt = 1;
+#ifdef AMMETER
+      // Not measured: the measurement costs 35 ms of arcing to obtain.
+      m_LastRelayOpenCurrentMa = RELAY_OPEN_CURRENT_UNKNOWN;
+#endif // AMMETER
+    }
   }
+  unsigned long relayCmdMs = millis(); // coil is about to be released below
 #endif
  // turn off charging current
 #ifdef OEV6
@@ -510,6 +631,41 @@ void J1772EVSEController::chargingOff(uint8_t emergency)
 
 #ifdef CHARGINGAC_REG
   pinChargingAC.write(0);
+#endif
+
+#ifdef RELAY_ZC_SWITCH
+  // The coil is released by this point, so the trip is done and the rest is
+  // bookkeeping. Count in RAM; the EEPROM write is deferred to the main loop
+  // because this may still be ISR context (see above).
+  if (deferHotSwitchCnt && (m_RelayHotSwitchCnt < 0xfffe)) {
+    m_RelayHotSwitchCnt++;
+    m_RelayHotSwitchCntDirty = 1;
+  }
+  if (wasOn) {
+    if (emergency) {
+      // Don't time the open here. waitRelayTransit() spins on millis(), and
+      // in ISR context (gfi_isr) millis() does not advance - so if the
+      // contacts never report open (e.g. welded, the very case a GFI trip
+      // can coincide with) it would spin forever, petting the watchdog as it
+      // goes. Record "not measured" instead; RelayHealth ignores it.
+      m_RelayOpenTransitMs = RELAY_TRANSIT_TIMEOUT_MS;
+    }
+    else {
+      m_RelayOpenTransitMs = waitRelayTransit(relayCmdMs,0);
+    }
+#ifdef RELAY_HEALTH
+    // An emergency open skips the ammeter (m_LastRelayOpenCurrentMa is
+    // RELAY_OPEN_CURRENT_UNKNOWN), but it is still a hot break and must
+    // still cost contact life. Charge it at the last current the main loop
+    // measured - a RAM read, so no added trip latency. $GW keeps reporting
+    // the open itself as unmeasured.
+    int32_t damageMa = m_LastRelayOpenCurrentMa;
+#ifdef AMMETER
+    if (damageMa < 0) damageMa = m_ChargingCurrent;
+#endif // AMMETER
+    g_RelayHealth.OnRelayOpen(hotOpen,damageMa,m_RelayOpenTransitMs);
+#endif
+  }
 #endif
 
   clrVFlags(ECVF_CHARGING_ON);
@@ -867,6 +1023,91 @@ uint8_t J1772EVSEController::ReadACPins()
 #endif // OPENEVSE_2
 }
 
+// true if acpinstate reads as the contacts still closed while the relay is
+// commanded open - i.e. welded/stuck. Same test used by the runtime
+// stuck-relay detector in Update() and by AttemptStuckRelayRecovery() to
+// re-test after each recovery round.
+uint8_t J1772EVSEController::RelayIsStuck(uint8_t acpinstate)
+{
+  return (hasCGMI() && !(acpinstate & RLY_TEST_PIN_OPEN)) ||
+         (!hasCGMI() && (acpinstate != ACPINS_OPEN));
+}
+
+// Attempts to free a welded/stuck relay: STUCK_RELAY_RECOVERY_ROUNDS rounds
+// of STUCK_RELAY_RECOVERY_CYCLES on/off toggles each (each toggle shorter
+// than the last within a round), re-testing the contacts after every round
+// and stopping early on success. Drives the relay via the normal
+// chargingOn()/chargingOff() path so it gets the right hardware handling
+// for every target/relay-drive variant, proper zero-cross timing when
+// enabled, and the same relay-life diagnostics (RelayHealth, $GW) as any
+// other open/close - these are real operations on the contact and should be
+// accounted for the same way. No EV is connected while this runs (caller's
+// responsibility to check), so every open here is a cold open.
+//
+// GFI fault latch as seen by AttemptStuckRelayRecovery(); 0 without GFI
+uint8_t J1772EVSEController::recoveryGfiFault()
+{
+#ifdef GFI
+  return m_Gfi.Fault();
+#else
+  return 0;
+#endif
+}
+
+// Blocking: worst case is 3 rounds * 5 toggles * up to 2s per toggle (on+off)
+// = well under a minute, but the caller (Update() or the $FK RAPI handler)
+// is stalled for the duration. WDT_RESET() every iteration; no single wait
+// segment approaches WATCHDOG_TIMEOUT_SEC.
+uint8_t J1772EVSEController::AttemptStuckRelayRecovery()
+{
+  // With the pilot at -12V (N12, e.g. EVSE disabled) ReadPilot() cannot
+  // update EvConnected(), so the per-close EV check below would be blind -
+  // an EV plugged in since the caller's check would go undetected. Refuse.
+  if (m_Pilot.GetState() == PILOT_STATE_N12) return 0;
+
+  if (m_StuckRelayRecoveryCnt < 0xfffe) {
+    eeprom_write_word((uint16_t*)EOFS_STUCK_RELAY_RECOVERY_CNT,++m_StuckRelayRecoveryCnt);
+  }
+
+  uint8_t stillStuck = 1;
+  for (uint8_t round = 0; stillStuck && (round < STUCK_RELAY_RECOVERY_ROUNDS); round++) {
+    for (uint8_t cycle = 0; cycle < STUCK_RELAY_RECOVERY_CYCLES; cycle++) {
+      uint16_t toggleMs = STUCK_RELAY_RECOVERY_START_MS - (STUCK_RELAY_RECOVERY_STEP_MS * cycle);
+      if (toggleMs < STUCK_RELAY_RECOVERY_MIN_MS) toggleMs = STUCK_RELAY_RECOVERY_MIN_MS;
+
+      // The caller only checked for an EV once, but this runs for tens of
+      // seconds, and a GFI trip mid-recovery opens the relay from the ISR
+      // but doesn't stop this loop closing it again before Update() sees
+      // the fault. So abandon recovery - relay open, reported as not
+      // recovered, so the caller falls through to its normal stuck-relay
+      // handling - the moment an EV appears or the GFI fault latches:
+      //  - at the coil write: chargingOn(1) re-reads the pilot after
+      //    skipping the zero-cross wait, and checks the GFI latch atomically
+      //    with driving the coil (and again before the RELAY_PWM hold)
+      //  - throughout the closed hold, below
+      if (!chargingOn(1)) {
+        chargingOff(); // belt and braces: the coil is already released
+        return 0;
+      }
+      unsigned long start = millis();
+      do {
+        WDT_RESET();
+        if (recoveryEvPresent() || recoveryGfiFault()) {
+          chargingOff();
+          return 0;
+        }
+      } while ((millis() - start) < toggleMs);
+
+      chargingOff();
+      start = millis();
+      do { WDT_RESET(); } while ((millis() - start) < toggleMs);
+    }
+
+    stillStuck = RelayIsStuck(ReadACPins());
+  }
+
+  return !stillStuck;
+}
 
 uint8_t J1772EVSEController::doPost()
 {
@@ -1160,6 +1401,19 @@ void J1772EVSEController::Init()
     m_relayFlags = ERELAYF_DEFAULT;
   }
 
+#ifdef RELAY_ZC_SWITCH
+  m_CurrentZeroThresholdMa = eeprom_read_word((uint16_t*)EOFS_CURRENT_ZERO_THRESHOLD_MA);
+  if (m_CurrentZeroThresholdMa == 0xffff) { // uninitialized EEPROM
+    m_CurrentZeroThresholdMa = CURRENT_ZERO_THRESHOLD_MA;
+  }
+  m_RelayHotSwitchCnt = eeprom_read_word((uint16_t*)EOFS_RELAY_HOTSWITCH_CNT);
+  if (m_RelayHotSwitchCnt == 0xffff) { // uninitialized EEPROM
+    m_RelayHotSwitchCnt = 0;
+  }
+  m_RelayHotSwitchCntDirty = 0;
+  m_LastRelayOpenCurrentMa = RELAY_OPEN_CURRENT_UNKNOWN;
+#endif // RELAY_ZC_SWITCH
+
 
 #ifdef OEV6
   if (isV6()) {
@@ -1325,6 +1579,10 @@ void J1772EVSEController::Init()
 
   m_StuckRelayStartTimeMS = 0;
   m_StuckRelayTripCnt = eeprom_read_byte((uint8_t*)EOFS_STUCK_RELAY_TRIP_CNT);
+  m_StuckRelayRecoveryCnt = eeprom_read_word((uint16_t*)EOFS_STUCK_RELAY_RECOVERY_CNT);
+  if (m_StuckRelayRecoveryCnt == 0xffff) { // uninitialized EEPROM
+    m_StuckRelayRecoveryCnt = 0;
+  }
 
   m_NoGndRetryCnt = 0;
   m_NoGndStart = 0;
@@ -1407,6 +1665,22 @@ void J1772EVSEController::Init()
 
 }
 
+// Stuck-relay recovery's EV check: samples the pilot like ReadPilot() but
+// changes no state - in particular it doesn't drive the Mennekes lock, whose
+// Lock() blocks for 300 ms, which would hold the relay closed that much
+// longer after an EV appears. Treats N12 (connection undetectable) as an EV
+// present, the fail-safe answer.
+uint8_t J1772EVSEController::recoveryEvPresent()
+{
+  if (m_Pilot.GetState() == PILOT_STATE_N12) return 1;
+  uint16_t ph = 0;
+  for (int i=0;i < PILOT_LOOP_CNT;i++) {
+    uint16_t reading = adcPilot.read();
+    if (reading > ph) ph = reading;
+  }
+  return (ph < m_ThreshData.m_ThreshAB) ? 1 : 0;
+}
+
 void J1772EVSEController::ReadPilot(uint16_t *plow,uint16_t *phigh)
 {
   uint16_t pl = ADC_MAX;
@@ -1423,7 +1697,9 @@ void J1772EVSEController::ReadPilot(uint16_t *plow,uint16_t *phigh)
       pl = reading;
     }
   }
-  //  RAPI_SERIAL_PORT.print("pilotread ");RAPI_SERIAL_PORT.println(millis()-sms);
+  //   RAPI_SERIAL_PORT.print("pilotread ");RAPI_SERIAL_PORT.println(millis()-sms);
+  //    sprintf(g_sTmp,"p %d %d",pl,ph);
+  //    RAPI_SERIAL_PORT.println(g_sTmp);
 
   if (m_Pilot.GetState() != PILOT_STATE_N12) {
     // update prev state
@@ -1466,6 +1742,10 @@ void J1772EVSEController::Update(uint8_t forcetransition)
 
   unsigned long curms = millis();
   WDT_RESET();
+
+  // Persist anything an ISR-reachable path counted but could not write (see
+  // FlushDeferredEepromWrites). Main-loop context here, so writing is safe.
+  FlushDeferredEepromWrites();
 
   if (m_EvseState == EVSE_STATE_DISABLED) {
     m_PrevEvseState = m_EvseState; // cancel state transition
@@ -1627,8 +1907,7 @@ void J1772EVSEController::Update(uint8_t forcetransition)
         }
       }
       else if (StuckRelayChkEnabled()) {    // stuck relay check - can test only when relay open
-        if ((hasCGMI() && !(acpinstate & RLY_TEST_PIN_OPEN)) ||
-            (!hasCGMI() && (acpinstate != ACPINS_OPEN))) { // Stuck Relay reading
+        if (RelayIsStuck(acpinstate)) { // Stuck Relay reading
           if ((prevevsestate != EVSE_STATE_STUCK_RELAY) && !m_StuckRelayStartTimeMS) { //check for first occurence
             m_StuckRelayStartTimeMS = curms; // mark start state
           }
@@ -1706,6 +1985,17 @@ if (TempChkEnabled()) {
   }
 }
 #endif // TEMPERATURE_MONITORING
+
+#ifdef CABLE_TEMPERATURE_MONITORING
+// Cable NTC over-temperature drops into the same fault state as the
+// enclosure sensors. Gated on its own enable ($FF C) rather than $FF T,
+// since it is separate hardware with its own per-source thresholds.
+if (g_CableTempMonitor.OverTemperature()) {
+  tmpevsestate = EVSE_STATE_OVER_TEMPERATURE;
+  m_EvseState = EVSE_STATE_OVER_TEMPERATURE;
+  nofault = 0;
+}
+#endif // CABLE_TEMPERATURE_MONITORING
 
  uint8_t prevpilotstate = m_PilotState;
  uint8_t tmppilotstate = EVSE_STATE_UNKNOWN;
@@ -1792,11 +2082,42 @@ if (TempChkEnabled()) {
     // debounce state transitions
     if (tmpevsestate != prevevsestate) {
       if (tmpevsestate != m_TmpEvseState) {
+        // reading disagreed with the last one - start the window over
         m_TmpEvseStateStart = curms;
+        m_TmpEvseStateCnt = 1;
       }
-      else if ((curms - m_TmpEvseStateStart) >= ((tmpevsestate == EVSE_STATE_A) ? DELAY_STATE_TRANSITION_A : DELAY_STATE_TRANSITION)) {
-        m_EvseState = tmpevsestate;
+      else {
+        if (m_TmpEvseStateCnt < 255) m_TmpEvseStateCnt++;
+
+        unsigned long reqms;
+        uint8_t reqcnt = 1;
+        if (tmpevsestate == EVSE_STATE_A) {
+          // unplug - must still be prompt, per spec
+          reqms = DELAY_STATE_TRANSITION_A;
+        }
+        else if ((prevevsestate == EVSE_STATE_C) &&
+                 ((tmpevsestate == EVSE_STATE_D) || (tmpevsestate == EVSE_STATE_B))) {
+          // Dropping out of an active charge into vent-required or connected.
+          // Require many agreeing reads over a long window: SAMD units have
+          // been reporting spurious vent-required mid-charge, and neither of
+          // these transitions is urgent enough to justify acting on a short
+          // run of samples. See DELAY_STATE_TRANSITION_FROM_C.
+          reqms = DELAY_STATE_TRANSITION_FROM_C;
+          reqcnt = STATE_TRANSITION_FROM_C_MIN_SAMPLES;
+        }
+        else {
+          reqms = DELAY_STATE_TRANSITION;
+        }
+
+        if (((curms - m_TmpEvseStateStart) >= reqms) && (m_TmpEvseStateCnt >= reqcnt)) {
+          m_EvseState = tmpevsestate;
+        }
       }
+    }
+    else {
+      // candidate agrees with the committed state again - drop any part-built
+      // case for leaving it, so a later glitch starts from scratch
+      m_TmpEvseStateCnt = 0;
     }
   } // nofault
 
@@ -1984,11 +2305,27 @@ if (TempChkEnabled()) {
     else if (m_EvseState == EVSE_STATE_STUCK_RELAY) {
       // Stuck relay detected
       chargingOff(); // turn off charging current
+      uint8_t recovered = 0;
+#ifdef ADVPWR
+      // Only safe to cycle the relay with no EV connected - if one's
+      // plugged in, skip straight to the hard fault below. On success,
+      // cancel the fault and let normal detection re-evaluate from
+      // scratch; on failure, fall through to the same hard fault as before.
+      if (!EvConnected() && AttemptStuckRelayRecovery()) {
+        m_StuckRelayStartTimeMS = 0;
+        recovered = 1;
+      }
+#endif // ADVPWR
+      if (recovered) {
+        m_EvseState = EVSE_STATE_UNKNOWN;
+      }
+      else {
 #ifdef UL_COMPLIANT
       // per discussion w/ UL Fred Reyes 20150217
       // always hard fault stuck relay
       HardFault(0);
 #endif // UL_COMPLIANT
+      }
     }
     else {
       m_Pilot.SetState(PILOT_STATE_P12);
@@ -2217,14 +2554,15 @@ void J1772EVSEController::Calibrate(PCALIB_DATA pcd)
   for (int l=0;l < 2;l++) {
     int reading;
     uint32_t tot = 0;
-    uint16_t plow = ADC_MAX
+    uint16_t plow = ADC_MAX;
     uint16_t phigh = 0;
     uint16_t avg = 0;
     m_Pilot.SetState(l ? PILOT_STATE_N12 : PILOT_STATE_P12);
 
     delay(250); // wait for stabilization
 
-    // 1x = 114us 20x = 2.3ms 100x = 11.3ms
+    // m328p: 1x = 114us 20x = 2.3ms 100x = 11.3ms
+    // samd: 825x = ~12-13ms
     int i;
     for (i=0;i < 1000;i++) {
       reading = adcPilot.read();  // measures pilot voltage
@@ -2270,8 +2608,14 @@ int J1772EVSEController::SetCurrentCapacity(uint8_t amps,uint8_t updatelcd,uint8
   uint8_t maxcurrentcap = (GetCurSvcLevel() == 1) ? MAX_CURRENT_CAPACITY_L1 : m_MaxHwCurrentCapacity;
 
   if (nosave) {
-    // temporary amps can't be > max set in EEPROM
-    maxcurrentcap = GetMaxCurrentCapacity();
+    // nosave == 1: internal temporary amps (PP, temperature throttle,
+    //   heartbeat restore) can't be > the default set in EEPROM.
+    // nosave == 2: a volatile override from RAPI ($SC amps V) may exceed
+    //   the EEPROM default, up to the hardware / service level maximum.
+    //   The EEPROM value is the boot default, not the ceiling.
+    if (nosave == 1) {
+      maxcurrentcap = GetMaxCurrentCapacity();
+    }
 
 #ifdef PP_AUTO_AMPACITY
   if ((GetState() >= EVSE_STATE_B) && (GetState() <= EVSE_STATE_C)) {

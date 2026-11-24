@@ -121,6 +121,32 @@ FD - disable EVSE
  $FD*AE
 FE - enable EVSE
  $FE*AF
+FH - reset relay Health/life estimate (requires RELAY_HEALTH)
+ clears the relay-life cumulative-damage accumulator, the transit-time/
+ thermal-index self-learned baselines, and the stuck-relay recovery
+ counter - use after replacing the contactor, so the estimate doesn't
+ carry over wear from the old relay.
+ $FH*xx
+FK - run stucK relay recovery cycle manually (requires ADVPWR)
+ Cycles the relay (STUCK_RELAY_RECOVERY_ROUNDS rounds of
+ STUCK_RELAY_RECOVERY_CYCLES on/off toggles each, shortening each toggle
+ within a round) to try to free a welded/stuck contact, same routine the
+ controller runs automatically on EVSE_STATE_STUCK_RELAY entry. NAK'd if
+ an EV is connected (unsafe to cycle the relay under load) - check $G0
+ first - or if the pilot is at -12V (N12, e.g. EVSE disabled), where a
+ connected EV can't be detected. Stops early, relay open, if an EV is
+ plugged in or a GFI fault latches mid-cycle. Does not itself report
+ whether the relay came free - check $GS
+ (state) or $GL (recovery counter) afterward. Blocking: up to ~30s worst
+ case (3 rounds x 5 toggles x up to 2s on+off, plus zero-cross/transit
+ overhead) before the response comes back.
+ $FK*xx
+FQ - run GFI self test now (SAMD only, GFI_SELFTEST_DIAG)
+ response: $OK result   (0=pass 1=no trip 2=GFI pin high before test
+                         3=GFI pin stuck high after test)
+ NAK'd while the relay is closed or a GFI fault is active. Blocking:
+ ~2-5 s. Does not change EVSE state. Details via $GQ.
+ $FQ*xx
 FO set Overtemperature threshold
  $FO panicthresh
  panicthresh in 10ths of a degree Celsius
@@ -138,6 +164,9 @@ FF - enable/disable feature
  0|1 0=disable 1=enable
  feature_id:
   B = disable/enable front panel button
+  C = Cable temperature monitoring (requires CABLE_TEMPERATURE_MONITORING)
+      NTC thermistors in the EV/input cables - see $SN/$GN. Independent of
+      T below: these are separate sensors with their own thresholds.
   D = Diode check
   E = command Echo
    use this for interactive terminal sessions with RAPI.
@@ -148,6 +177,9 @@ FF - enable/disable feature
   L = boot Lock
   O = overcurrent check
   P = PP auto ampacity
+      n.b. PP_READ is shared with cable temperature monitoring. Enabling
+      this unassigns any $SN source using pin 1, and assigning a source to
+      pin 1 disables this. Both changes are silent - read back with $GE/$GN.
   R = stuck Relay check
   T = temperature monitoring
   V = Vent required check
@@ -196,7 +228,10 @@ SC amps [V|M]- set current capacity
    ampsset: the resultant current capacity
    default action is to save new current capacity to EEPROM for the currently active service level.
    if V is specified, then new current capacity is volatile, and will be
-     reset to previous value at next reboot
+     reset to previous value at next reboot. A volatile value may exceed
+     the saved (EEPROM) current capacity, up to the maximum hardware
+     current capacity; the saved value is the boot default, not a ceiling
+     (D9.4.2+; earlier versions capped V at the saved value)
    if M is specified, sets maximum L2 current capacity for the unit and writes
      to EEPROM. subsequent calls the $SC cannot exceed value set bye $SC M
      the value cannot be changed/erased via RAPI commands. Subsequent calls
@@ -236,6 +271,41 @@ SY heartbeatinterval heartbeatcurrentlimit
  $SY 165    //This is an acknowledgement of a missed pulse.  Magic Cookie = 165 (=0XA5)
  When you send a pulse, an NK response indicates that a previous pulse was missed and has not yet been acked
 
+SN - set cable temperature sensor configuration (requires CABLE_TEMPERATURE_MONITORING)
+ two forms:
+  $SN idx pin                        - reassign the input pin only
+  $SN idx pin r25 beta offset panic  - set the whole configuration
+ idx(decimal): temperature source
+   0 = EV1, 1 = EV2 (EV/output cable)
+   2 = IN1, 3 = IN2 (input/supply cable)
+ pin(decimal): which analog input this source is wired to
+   0 = unassigned (source disabled)
+   1 = PP_READ  (ADC2 on 328P / PB09 on SAMD)
+   2 = PP2_READ (ADC3 on 328P / PA04 on SAMD)
+   Only two of the four sources can be assigned at once - there are only two
+   inputs. Nothing stops two sources sharing an input; they will simply read
+   the same voltage through their own calibration.
+   IMPORTANT: pin 1 is shared with the proximity pilot. Assigning any source
+   to pin 1 automatically disables PP auto ampacity ($FF P 0), and enabling
+   PP auto ampacity automatically unassigns every source on pin 1. The two
+   functions cannot both own that pin.
+ r25(decimal): NTC nominal resistance at 25C, in ohms. range 100-65534
+   (65535 is reserved - it reads back as an erased EEPROM word).
+ beta(decimal): NTC beta coefficient. range 1000-6000.
+ offset(decimal, signed): calibration offset added to the computed reading,
+   in 10ths of a degree Celsius. range -2000..2000.
+ panic(decimal): shutdown threshold in 10ths of a degree Celsius. range
+   300-1500. When any assigned source reaches its threshold the EVSE enters
+   the EVSE_STATE_OVER_TEMPERATURE fault state.
+ defaults (Phoenix Contact NACS cable, 10k NTC): r25=10000 beta=3443
+   offset=0 panic=900. beta 3443 reproduces the datasheet's 1266 ohms at 90C,
+   which is that cable's recommended shut-off temperature.
+ response:
+   $OK - accepted and saved to EEPROM
+   $NK - bad idx/pin, or a value out of range
+ $SN 0 2 10000 3443 0 900 - EV1 on PP2_READ, stock Phoenix Contact NACS cable
+ $SN 0 0                  - unassign EV1
+
 SR n 0|1 - enable/disable relay output (saved to EEPROM, applied at boot)
  n: 1=DC relay 1, 2=DC relay 2, 3=AC relay
  0=disable 1=enable (all relays enabled by default)
@@ -243,6 +313,15 @@ SR n 0|1 - enable/disable relay output (saved to EEPROM, applied at boot)
  $SR 2 0 - disable DC relay 2
  $SR 3 0 - disable AC relay
  $SR 1 1 - re-enable DC relay 1
+
+SZ ma - set relay-open current-zero threshold (requires RELAY_ZC_SWITCH)
+ ma(decimal): current, in mA, below which the relay is considered safe to
+   open at a current zero. Some units never read below the compiled-in
+   default (200 mA) due to ammeter offset/noise floor, which stalls every
+   non-emergency relay open for the full internal timeout (1s) - use this to
+   retune without a firmware rebuild.
+ range: 0-5000 (clamped). saved to EEPROM, applied immediately and at boot.
+ $SZ 300 - relay is considered safe to open below 300 mA
 
 G0 - get EV connect state
  response: $OK connectstate
@@ -333,6 +412,28 @@ GM - get voltMeter settings
  response: $OK voltcalefactor voltoffset
  $GM^2E
 
+GN - get cable temperatures, or one source's configuration
+     (requires CABLE_TEMPERATURE_MONITORING)
+ two forms:
+  $GN     - read all four temperatures
+    response: $OK ev1 ev2 in1 in2
+    all in 10ths of a degree Celsius, or one of these sentinels:
+      -2560 = source unassigned, or the feature is disabled ($FF C 0)
+      -2561 = open circuit - no cable plugged in, or a disconnected/broken
+              thermistor. Also reported below about -40C, where the divider
+              sits within an ADC count or two of the rail and a very cold
+              cable cannot be told apart from an open one.
+      -2562 = shorted thermistor or wiring
+    n.b. neither -2561 nor -2562 faults the EVSE. A cable that is simply
+    unplugged reads open, so an open reading cannot be treated as an error;
+    a hard short is reported for diagnosis rather than shutdown. Only a
+    valid reading at or above the source's panic threshold trips a fault.
+    $GN^32
+  $GN idx - read one source's configuration (idx as for $SN)
+    response: $OK pin r25 beta offset panic
+    values as documented under $SN
+    $GN 0
+
 GO get Overtemperature threshold
  response: $OK panicthresh
  panicthresh in 10ths of a degree Celsius
@@ -346,6 +447,19 @@ GP - get temPerature (v1.0.3+)
  all temperatures are in 10th's of a degree Celcius
  if any temperature sensor is not installed, its return value is -2560
  $GP^33
+
+GQ - get last GFI self test diagnostics (SAMD only, GFI_SELFTEST_DIAG)
+ response: $OK result pinbefore edges firstedgems highsamples samples clearms
+ result - last self test code (0=pass 1=no trip 2=pin high before
+          3=pin stuck high after, 255=never run/didn't finish)
+ pinbefore - GFI pin level when the test was entered (should be 0)
+ edges - rising edges the GFI ISR saw while the test was in progress
+ firstedgems - ms from test current start to first edge (65535=none)
+ highsamples/samples - 1 ms polls of the GFI pin that read HIGH while
+          test current flowed / total polls. edges=0 with highsamples>0
+          means the GFI output fired but the interrupt didn't.
+ clearms - ms for GFI pin to go low after test current stopped (65535=never)
+ $GQ*xx
 
 GS - get state
  response: $OK evsestate elapsed pilotstate vflags
@@ -383,14 +497,64 @@ GY - Get Hearbeat Supervision Status
  1 - There was a missed pulse once, but it has since been acknkoledged. Ampacity has been successfully restored to max permitted
  See SY above for worked expamples.
 
-GZ - get AC line frequency (requires RELAY_ZC_SWITCH)
- response: $OK freqx100
+GZ - get AC line frequency + relay-open current-zero threshold (requires RELAY_ZC_SWITCH)
+ response: $OK freqx100 zerothreshma
  freqx100(decimal): measured AC frequency * 100, e.g. 6012 = 60.12 Hz
  0 = frequency not yet measured (no relay operation has occurred since boot)
  CGMI hardware: updated on relay close (zcWaitRelayClose) and open (zcWaitRelayOpen)
  non-CGMI hardware: updated on relay open only (zcWaitRelayOpen); AC pins are
    load-side on older non-V6 boards so no valid signal is available at relay close
+ zerothreshma(decimal): current RAPI $SZ-configured current-zero threshold, in mA
  $GZ^38
+
+GW - get relay Wear/life diagnostics (requires RELAY_ZC_SWITCH)
+ response: $OK hotswitchcnt lastopenma closetransitms opentransitms
+ hotswitchcnt(decimal): cumulative count of relay opens where current never
+   reached the zero threshold before opening (i.e. an arced/"hot" break -
+   includes emergency opens and opens while zero-cross switching is
+   disabled via $FF Z 0). Saturates at 65534; persisted across reboots.
+ lastopenma(decimal): ammeter reading, in mA, immediately before the most
+   recent relay open. For relay-life estimation/trending.
+ closetransitms(decimal): elapsed ms from the close command to the load-side
+   AC-sense pin confirming the relay physically closed, from the most recent
+   close. opentransitms: same, for the most recent open.
+   300 (RELAY_TRANSIT_TIMEOUT_MS) = timed out/not confirmed, or not
+   measurable on this hardware (requires CGMI)
+ $GW^39
+
+GL - get relay Life/health estimate (requires RELAY_HEALTH; needs RELAY_ZC_SWITCH + AMMETER)
+ response: $OK pctremain coldopencnt elecdamagex1e6 transitbaselinems transitdrift thermalx100 thermalbaselinex100 thermalwarn stuckrelayrecoverycnt
+ Cumulative-damage (Miner's rule) contact-life estimate built on the $GW
+ diagnostics, plus (if TEMPERATURE_MONITORING) a self-baselined thermal
+ index. Diagnostic only - never gates charging logic. See RelayHealth.h for
+ the full derivation. Reset via $FH (e.g. after relay replacement).
+ pctremain(decimal, 0-100): estimated relay life remaining. Combines an
+   electrical-damage accumulator (hot opens, weighted by
+   (I/I_rated)^2 * load-character * temperature multipliers) with a
+   mechanical-damage term (cold opens / rated mechanical life) - in a
+   well-behaved installation the electrical term dominates and is driven
+   almost entirely by fault-interrupt/e-stop events, not normal sessions.
+ coldopencnt(decimal): cumulative cold (non-arced) relay-open count.
+ elecdamagex1e6(decimal): raw electrical-damage accumulator, in millionths
+   of rated electrical life consumed (1000000 = 100%). Debug/trend field.
+ transitbaselinems(decimal): self-learned baseline open (drop-out) transit
+   time, in ms. 65535 = baseline not yet established (needs 8 post-reset
+   measurements; requires CGMI hardware, see $GW).
+ transitdrift(0|1): 1 if the most recent open-transit time is >=1.5x the
+   baseline - an early symptom of contact welding, ahead of the hard
+   EVSE_STATE_STUCK_RELAY check.
+ thermalx100(decimal): most recent deltaT/I^2 sample (x100), proportional to
+   contact resistance. 65535 = not available (no TEMPERATURE_MONITORING, no
+   session yet, or current below the 6A sampling floor).
+ thermalbaselinex100(decimal): self-learned baseline H0 (x100). 65535 = not
+   yet established (needs 4 in-session samples) or not available.
+ thermalwarn(decimal): 0=ok/not available 1=watch (>=1.5x baseline)
+   2=warn (>=2x baseline).
+ stuckrelayrecoverycnt(decimal): cumulative count of stuck-relay recovery
+   attempts run (automatic, on EVSE_STATE_STUCK_RELAY entry with no EV
+   connected, or manual via $FK). 0 if ADVPWR isn't built in. Saturates at
+   65534; persisted across reboots; reset via $FH.
+ $GL^3a
 
 Z0 FOR TESTING RELAY_AUTO_PWM_PIN ONLY
 Z0 closems holdpwm
@@ -415,13 +579,27 @@ Z0 closems holdpwm
 // MCU_ID_LEN is 16, so that is 2*16+1 = 33 bytes and the historic 32-byte
 // buffer overflowed by one, corrupting the adjacent bufCnt member. Size
 // per target so AVR RAM cost stays zero.
-#ifdef TARGET_SAMD
+// The longest inbound command is likewise sized here. With
+// CABLE_TEMPERATURE_MONITORING that is the 6-argument form of $SN, whose
+// worst case is "$SN 3 2 65534 6000 -2000 1500 :XX^XX" = 36 chars + NUL, so
+// AVR needs the larger buffer too.
+// With RELAY_HEALTH, the $GL response text (RAPI_GL_MAX_LEN, see
+// open_evse.h) is longer than either, on every target.
+#if defined(RELAY_HEALTH)
+#define ESRAPI_BUFLEN (RAPI_GL_MAX_LEN + 1)
+#elif defined(TARGET_SAMD) || defined(CABLE_TEMPERATURE_MONITORING)
 #define ESRAPI_BUFLEN 40
 #else
 #define ESRAPI_BUFLEN 32
 #endif
 #if defined(MCU_ID_LEN) && (ESRAPI_BUFLEN < (2*MCU_ID_LEN + 1))
 #error "ESRAPI_BUFLEN too small for the $GI response on this target"
+#endif
+#if defined(CABLE_TEMPERATURE_MONITORING) && (ESRAPI_BUFLEN < 40)
+#error "ESRAPI_BUFLEN too small for the 6-argument $SN command"
+#endif
+#if defined(RELAY_HEALTH) && (ESRAPI_BUFLEN < (RAPI_GL_MAX_LEN + 1))
+#error "ESRAPI_BUFLEN too small for the $GL response"
 #endif
 #define ESRAPI_SOC '$' // start of command
 #define ESRAPI_EOC 0xd // CR end of command

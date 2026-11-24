@@ -13,8 +13,9 @@
 
 
 // for J1772.ReadPilot()
-// 15 = ~13ms
-#define PILOT_LOOP_CNT 15
+// analogRead() 15 = ~13ms too slow!!!
+// adcPin::read() 825 ~ 12-13ms
+#define PILOT_LOOP_CNT 825
 
 
 #define GetVerStr(s) strcpy(s,VERSION)
@@ -55,6 +56,8 @@ inline void wdt_reset()
 class DigitalPin {
   uint32_t _pinNum;
   uint32_t _pinMode;
+  uint32_t _port;
+  uint32_t _mask;
   
 public:
   enum PinMode { INP,INP_PU,OUT };
@@ -64,40 +67,50 @@ public:
     init(pinnum,idxjunk,mode);
   }
 
-void init(uint32_t pinnum,int idxjunk,PinMode mode);
-  void mode(PinMode mode);
+  void init(uint32_t pinnum,int idxjunk,PinMode mode);
 
   uint8_t read() {
-    return digitalRead(_pinNum) ? 1 : 0;
+    return (PORT->Group[_port].IN.reg & _mask) != 0;
   }
   void write(uint32_t state) {
-    digitalWrite(_pinNum,state ? HIGH : LOW);
+    if (_pinMode != OUTPUT) {
+      return;
+    }
+
+    if (state)
+        PORT->Group[_port].OUTSET.reg = _mask;
+    else
+        PORT->Group[_port].OUTCLR.reg = _mask;
   }
 };
 
 class AdcPin {
+  static bool _adcInitDone;
   uint32_t _pinNum;
+  bool _pinMuxDone; // pin routed to the ADC (PORT PMUX function B) yet?
+
+  void  _adcInit();
 public:
 
-  AdcPin() {}
+  AdcPin() : _pinMuxDone(false) {}
   AdcPin(uint32_t pinnum) {
     init(pinnum);
   }
 
+  // n.b. may run from a global constructor, before the core's init(), so
+  // the pin itself is configured lazily on the first read()
   void init(uint32_t pinnum) {
     _pinNum = pinnum;
-    analogReadResolution(ADC_RESOLUTION_BITS);
+    _pinMuxDone = false;
   }
 
-  uint32_t read() {
-    // NB pin-number remap trap: the SAMD Arduino core's analogRead() does
-    // `if (pin < A0) pin += A0;` (wiring_analog.c), so an AdcPin built with a
-    // low digital pin number silently samples a *different*, A0-offset pin.
-    // Safe here only because every AdcPin instance uses A0..A5 (>= A0):
-    // PILOT_SENSE_PIN, CURRENT_PIN, PP_PIN.  The GMI zero-cross line on PA09
-    // (pin 3) cannot use analogRead() at all — see gmiAdc*() below.
-    return analogRead(_pinNum);
-  }
+  // NB pin-number remap trap: the SAMD Arduino core's analogRead() does
+  // `if (pin < A0) pin += A0;` (wiring_analog.c), so an AdcPin built with a
+  // low digital pin number silently samples a *different*, A0-offset pin.
+  // Safe here only because every AdcPin instance uses A0..A5 (>= A0):
+  // PILOT_SENSE_PIN, CURRENT_PIN, PP_PIN.  The GMI zero-cross line on PA09
+  // (pin 3) cannot use analogRead() at all — see gmiAdc*() below.
+  uint32_t read();
 };
 
 #ifdef RELAY_ZC_SWITCH

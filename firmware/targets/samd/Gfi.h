@@ -22,17 +22,32 @@
  */
 #pragma once
 
+#ifdef GFI_SELFTEST
+// Self-test diagnostics, read back via RAPI $GQ, test run on demand via $FQ
+#define GFI_SELFTEST_DIAG
+#endif
+
 class Gfi {
   DigitalPin pin;
   uint8_t m_GfiFault;
 #ifdef GFI_SELFTEST
   volatile uint8_t testSuccess;
-  uint8_t testInProgress;
+  volatile uint8_t testInProgress;
+  void gfiPWM60Hz(uint8_t pin,unsigned long waitms);
 #endif // GFI_SELFTEST
+#ifdef GFI_SELFTEST_DIAG
+  // filled by SelfTest(); see $GQ in rapi_proc.h for the meaning of each
+  uint8_t  diagResult;      // last SelfTest() return code
+  uint8_t  diagPinBefore;   // GFI pin level just before test current starts
+  volatile uint16_t diagEdgeCnt; // rising edges seen by the ISR during the test
+  volatile uint16_t diagFirstEdgeMs; // ms from test start to first edge
+  unsigned long diagStartMs;
+  uint16_t diagHighSamples; // polls of the GFI pin that read HIGH while test current flowed
+  uint16_t diagSamples;     // total polls while test current flowed
+  uint16_t diagClearMs;     // ms for GFI pin to go low after test current stopped
+#endif // GFI_SELFTEST_DIAG
+
 public:
-#ifdef GFI_SELFTEST
-  DigitalPin pinTest;
-#endif
 
   Gfi() {}
 
@@ -42,7 +57,18 @@ public:
   uint8_t Fault() { return m_GfiFault; }
 #ifdef GFI_SELFTEST
   uint8_t SelfTest();
+#ifdef GFI_SELFTEST_DIAG
+  // called from ISR context (gfi_isr -> SetGfiTripped)
+  void SetTestSuccess() {
+    if (!testSuccess) diagFirstEdgeMs = (uint16_t)(millis() - diagStartMs);
+    if (diagEdgeCnt < 0xffff) diagEdgeCnt++;
+    testSuccess = 1;
+  }
+  // "$OK result pinbefore edges firstedgems highsamples samples clearms"
+  void GetDiag(char *buf);
+#else
   void SetTestSuccess() { testSuccess = 1; }
+#endif
   uint8_t SelfTestSuccess() { return testSuccess; }
   uint8_t SelfTestInProgress() { return testInProgress; }
 #endif

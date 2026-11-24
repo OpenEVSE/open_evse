@@ -184,6 +184,7 @@ class J1772EVSEController {
   uint8_t m_NoGndTripCnt; // contains tripcnt-1
   unsigned long m_StuckRelayStartTimeMS;
   uint8_t m_StuckRelayTripCnt; // contains tripcnt-1
+  uint16_t m_StuckRelayRecoveryCnt; // cumulative count of stuck-relay recovery attempts run
 #endif // ADVPWR
 #ifdef RELAY_PWM
   uint8_t m_relayCloseMs; // #ms for DC pulse to close relay
@@ -192,6 +193,17 @@ class J1772EVSEController {
   uint8_t m_relayFlags; // ERELAYF_xxx - relay enable/disable bitmask
 #ifdef RELAY_ZC_SWITCH
   uint16_t m_AcFreqX100; // measured AC frequency × 100 (e.g. 6012 = 60.12 Hz); 0 = not yet measured
+  uint16_t m_CurrentZeroThresholdMa; // configurable via RAPI $SZ; mA below which the relay is opened at a current zero
+  uint16_t m_RelayHotSwitchCnt; // cumulative count of relay opens where current never reached the zero threshold (arced/hot open)
+  // Set when m_RelayHotSwitchCnt has been bumped in RAM on a path that must
+  // not block - specifically the emergency open reached from gfi_isr(). The
+  // EEPROM write is an I2C transaction to an external device on SAMD, which
+  // has no business running in an ISR ahead of releasing the relay coil.
+  // Flushed from the main loop by FlushDeferredEepromWrites().
+  volatile uint8_t m_RelayHotSwitchCntDirty;
+  int32_t  m_LastRelayOpenCurrentMa; // ammeter reading immediately before the last relay open, for relay-life estimation (RELAY_OPEN_CURRENT_UNKNOWN on an emergency open - not measured, see chargingOff())
+  uint16_t m_RelayCloseTransitMs; // last measured command-to-physically-closed time (RELAY_TRANSIT_TIMEOUT_MS if unmeasured/timed out)
+  uint16_t m_RelayOpenTransitMs;  // last measured command-to-physically-open time (RELAY_TRANSIT_TIMEOUT_MS if unmeasured/timed out)
 #endif
   uint16_t m_wFlags; // ECF_xxx
   uint16_t m_wVFlags; // ECVF_xxx
@@ -202,6 +214,10 @@ class J1772EVSEController {
   uint8_t m_TmpPilotState;
   uint8_t m_PilotState;
   unsigned long m_TmpEvseStateStart;
+  // consecutive Update() passes that have agreed on m_TmpEvseState, saturating
+  // at 255. Paired with m_TmpEvseStateStart so a transition can require both a
+  // minimum elapsed time and a minimum number of reads.
+  uint8_t m_TmpEvseStateCnt;
   unsigned long m_TmpPilotStateStart;
   uint8_t m_MaxHwCurrentCapacity; // max L2 amps that can be set
   uint8_t m_CurrentCapacity; // max amps we can output
@@ -262,15 +278,17 @@ class J1772EVSEController {
 #define FG 5 // GFI fault
 
   uint8_t doPost();
+  uint8_t RelayIsStuck(uint8_t acpinstate); // true if acpinstate reads as contacts still closed w/ relay commanded open
 #endif // ADVPWR
-  void chargingOn();
+  uint8_t chargingOn(uint8_t recoveryGuard=0); // see .cpp; returns 1 if the coil was driven
   void chargingOff(uint8_t emergency = 0);
 #ifdef RELAY_ZC_SWITCH
   void zcWaitRelay(uint8_t advanceMs);
   void zcWaitRelayClose();
   void zcWaitRelayOpen();
-  void waitCurrentZero();
+  uint8_t waitCurrentZero(); // returns 1 if current never reached the zero threshold (hot open)
   uint32_t measureAcFreq(unsigned long *zcTimeMsOut);
+  uint16_t waitRelayTransit(unsigned long cmdStartMs, uint8_t wantClosed);
 #endif
   uint8_t chargingIsOn() { return vFlagIsSet(ECVF_CHARGING_ON); }
 
@@ -364,7 +382,22 @@ public:
     SaveEvseFlags();
   }
   uint16_t GetAcFreqX100() { return m_AcFreqX100; }
+  uint16_t GetCurrentZeroThresholdMa() { return m_CurrentZeroThresholdMa; }
+  void SetCurrentZeroThresholdMa(uint16_t ma) {
+    if (ma > CURRENT_ZERO_THRESHOLD_MAX_MA) ma = CURRENT_ZERO_THRESHOLD_MAX_MA;
+    m_CurrentZeroThresholdMa = ma;
+    eeprom_write_word((uint16_t*)EOFS_CURRENT_ZERO_THRESHOLD_MA,ma);
+  }
+  uint16_t GetRelayHotSwitchCnt() { return m_RelayHotSwitchCnt; }
+  int32_t GetLastRelayOpenCurrentMa() { return m_LastRelayOpenCurrentMa; }
+  uint16_t GetRelayCloseTransitMs() { return m_RelayCloseTransitMs; }
+  uint16_t GetRelayOpenTransitMs() { return m_RelayOpenTransitMs; }
 #endif // RELAY_ZC_SWITCH
+  // Persist any counter bumped on a no-blocking path (see
+  // m_RelayHotSwitchCntDirty, RelayHealth::OnRelayOpen()). Must be called
+  // from the main loop only, never from an ISR. Cheap no-op when nothing is
+  // pending, and an empty stub without RELAY_ZC_SWITCH.
+  void FlushDeferredEepromWrites();
   int8_t BootLockIsEnabled() { return !flagIsSet(ECF_BOOT_LOCK_DISABLED); }
   void EnableBootLock(uint8_t tf) {
     if (!tf) setFlags(ECF_BOOT_LOCK_DISABLED); 
@@ -384,6 +417,12 @@ public:
     else clrFlags(ECF_PP_AUTO_AMPACITY);
     SaveEvseFlags();
     g_ACCController.Enable(tf);
+#ifdef CABLE_TEMPERATURE_MONITORING
+    // PP_READ has one owner: taking it back for proximity pilot unassigns any
+    // cable temperature source sitting on it. The inverse - assigning a source
+    // to PP_READ - turns this off, in CableTempMonitor::SetPin().
+    if (tf) g_CableTempMonitor.ReleasePPPin();
+#endif // CABLE_TEMPERATURE_MONITORING
   }
   #endif // PP_AUTO_AMPACITY
   unsigned long GetResetMs();
@@ -394,6 +433,8 @@ public:
     return m_CurrentCapacity; 
   }
   uint8_t GetMaxCurrentCapacity();
+  // nosave: 0 = save to EEPROM, 1 = volatile capped at the EEPROM value,
+  // 2 = volatile override capped only at the hardware max ($SC amps V)
   int SetCurrentCapacity(uint8_t amps,uint8_t updatelcd=0,uint8_t nosave=0);
 
   time_t GetElapsedChargeTime() { 
@@ -479,6 +520,16 @@ public:
     return (m_wFlags & ECF_GFI_TEST_DISABLED) ? 0 : 1;
   }
   void EnableGfiSelfTest(uint8_t tf);
+#ifdef GFI_SELFTEST_DIAG
+  void GetGfiSelfTestDiag(char *buf) { m_Gfi.GetDiag(buf); }
+  // run the GFI self test on demand ($FQ). Refused (-1) while the relay is
+  // closed or a GFI fault is active (a passing test clears m_GfiFault and
+  // would mask a real fault); otherwise returns Gfi::SelfTest()'s code.
+  int8_t RunGfiSelfTest() {
+    if (chargingIsOn() || m_Gfi.Fault()) return -1;
+    return (int8_t)m_Gfi.SelfTest();
+  }
+#endif // GFI_SELFTEST_DIAG
 #else // !GFI_SELFTEST
   uint8_t GfiSelfTestEnabled() { return 0; }
   void EnableGfiSelfTest(uint8_t tf) {}
@@ -593,6 +644,21 @@ int GetHearbeatTrigger();
 #ifdef ADVPWR
   uint8_t GetNoGndTripCnt() { return m_NoGndTripCnt+1; }
   uint8_t GetStuckRelayTripCnt() { return m_StuckRelayTripCnt+1; }
+  uint16_t GetStuckRelayRecoveryCnt() { return m_StuckRelayRecoveryCnt; }
+  // Attempts to free a welded/stuck relay by cycling it: STUCK_RELAY_RECOVERY_CYCLES
+  // on/off toggles per round (each toggle shorter than the last), for up to
+  // STUCK_RELAY_RECOVERY_ROUNDS rounds, re-testing the contacts after each
+  // round. Callers must still check there's no EV connected before calling.
+  // As a backstop it re-reads the pilot at every coil write and throughout
+  // each closed hold, and stops, relay open, if an EV appears or a GFI fault
+  // latches (the GFI check is atomic with the coil write); it refuses outright
+  // (without counting an attempt) when the pilot is N12, where an EV can't
+  // be detected. Returns 1 if the contacts tested free afterward, 0 if still
+  // stuck, refused or abandoned. Otherwise counts as one attempt in
+  // GetStuckRelayRecoveryCnt(), regardless of outcome.
+  uint8_t AttemptStuckRelayRecovery();
+  uint8_t recoveryGfiFault();
+  uint8_t recoveryEvPresent();
 #endif // ADVPWR
 
 #ifdef STATE_TRANSITION_REQ_FUNC
@@ -663,6 +729,15 @@ int GetHearbeatTrigger();
     eeprom_write_byte((uint8_t*)EOFS_NOGND_TRIP_CNT,0xff);
     eeprom_write_byte((uint8_t*)EOFS_STUCK_RELAY_TRIP_CNT,0xff);
   }
+#ifdef ADVPWR
+  // separate from ResetFaultCounters() ($FC) - grouped with the relay-life
+  // resets under $FH instead, since it's a wear/diagnostic counter (like
+  // RelayHealth's accumulators), not a fault-trip counter
+  void ResetStuckRelayRecoveryCnt() {
+    m_StuckRelayRecoveryCnt = 0;
+    eeprom_write_word((uint16_t*)EOFS_STUCK_RELAY_RECOVERY_CNT,0);
+  }
+#endif // ADVPWR
 #ifdef PP_AUTO_AMPACITY
   void DoPPError(bool shorted);
 #endif // PP_AUTO_AMPACITY

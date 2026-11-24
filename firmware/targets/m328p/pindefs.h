@@ -26,6 +26,12 @@
 #define CURRENT_PIN 0 // analog current reading pin ADCx
 #define PILOT_SENSE_PIN 1 // analog pilot voltage reading pin ADCx
 #define PP_PIN 2 // PP_READ - ADC2
+// No PP2_PIN on this target: ADC3 is PC3, which is the front-panel button
+// input (BTN_REG/BTN_IDX above, an internally pulled-up digital input). An
+// NTC divider sampled there would be biased by the pull-up and pressing the
+// button would read as a shorted thermistor. With PP2_PIN undefined,
+// CableTempMonitor only offers PP_READ (CABLE_TEMP_PIN_MAX == PP).
+//#define PP2_PIN 3 // PP2_READ - ADC3
 
  // TEST PIN 1 for L1/L2, ground and stuck relay
 #define ACLINE1_REG &PIND

@@ -1,6 +1,66 @@
 Change Log
 
+20261123 D9.4.3
+- build: drop the m328p_core environment; rename m328p_LCD_WIFI to
+  m328p_core_lcd. CI now builds only m328p_core_lcd and samd.
+- GFI / emergency relay open: no longer waits for the relay open-transit
+  confirmation, which spun on millis() inside gfi_isr() and could hang
+  forever on a welded relay. RelayHealth hot-open damage and transit-baseline
+  EEPROM writes are now deferred to the main loop (never from the ISR).
+- stuck-relay recovery: checks the pilot at every coil write (no
+  zero-cross wait in between) and throughout each closed hold, and the GFI
+  fault latch atomically with the coil write; abandons recovery, relay
+  open, if an EV is plugged in or a GFI fault latches mid-cycle. Refused ($FK NAKs) with the pilot at N12 (e.g.
+  disabled), where a connected EV can't be detected.
+- GFI self-test (AVR and SAMD): clearing testInProgress, the final
+  output check and clearing the fault now happen with interrupts masked, so
+  a trip at the end of the test can't be absorbed as "test success". AVR
+  also gains the post-settle re-check.
+- RelayHealth:
+  - emergency opens are charged at the last measured current instead of
+    contributing zero wear
+  - electrical damage computed from mA without intermediate truncation;
+    sub-millionth remainders carry over, so small hot opens accumulate
+  - transit baseline learned at 0.01 ms, thermal index at x10000 (was x100,
+    which computed 0 for typical contact heating). $GL keeps its existing
+    scales. Baselines learned by earlier builds are discarded and relearned
+    (tagged sample-count byte in EEPROM).
+- RAPI: $GL response overflowed the RAPI buffer and g_sTmp (esp. on AVR);
+  buffers resized with #error guards. $SN/$GN reject arguments that overflow
+  int32 or contain non-digits instead of wrapping them into range.
+- cable temp: r25=65535 rejected (it reloaded as the default 10000 after a
+  reboot); a negative calibration offset can no longer pull the >=150C
+  hot-end clamp below the panic threshold; PP2 removed on the 328P, where
+  ADC3/PC3 is the front-panel button.
+- SAMD: GFI self-test fails (3) if the GFI output is still high after the
+  settle delay (now also AVR, see above); $GQ reports 255 until a self-test has run; ADC uses all 8
+  linearity calibration bits, clears RESRDY before starting a conversion, and
+  routes the pin to the analog mux; samd_ice_dev (CALIBRATE) builds again.
 
+20261105 D9.4.2
+- SAMD GFI self test:
+  - stop tone() as soon as the trip is detected; it kept driving the test
+    winding for the rest of the 1 s window, so a post-"pass" pulse could trip
+    the real GFI path -> spurious GFCI fault
+  - restore the 1 s post-test settle delay (as on AVR)
+  - drive the GFI test pin (PA06) low at boot instead of leaving it floating
+  - enable strong drive (DRVSTR) on PA06 for more test-transistor base drive
+- RAPI $SC amps V: a volatile current may now exceed the saved (EEPROM)
+  current capacity, up to the hardware max. The saved value is the boot
+  default, not a ceiling, so the WiFi module can apply a temporary override
+  above it (openevse_esp32_firmware#1403). PP, temperature throttle and
+  heartbeat restore still cap at the saved value.
+
+20260722 SCL
+- SAMD:
+  - GFI self test was failing sometimes -> replace self test tickling loop with PWM (tone())
+  - get rid of slow digitalRead()/digitalWrite() and replace w/ bare metal code in DigitalPin::read()/write()
+
+20260716 SCL
+- SAMD:
+  - adjust pilot thresholds
+  - analogRead() was undersampling pilot -> replace with fast direct ADC code
+	
 20260528-29 SCL vD9.0.1
 - m328p: since A6 is floating in v1-5, read it 5x and use its statistical mode
 	when detecting board type

@@ -37,6 +37,9 @@
 #if defined(MCU_ID_LEN) && (TMP_BUF_SIZE < (3 + 1 + (2*MCU_ID_LEN) + 4 + 4 + 1))
 #error "TMP_BUF_SIZE too small for the $GI RAPI response on this target"
 #endif
+#if defined(RELAY_HEALTH) && (TMP_BUF_SIZE < (4 + RAPI_GL_MAX_LEN + 4 + 4 + 1))
+#error "TMP_BUF_SIZE too small for the $GL RAPI response"
+#endif
 
 const char RAPI_VER[] PROGMEM = RAPIVER;
 
@@ -87,6 +90,34 @@ uint32_t dtoi32(const char *s)
 
   return i;
 }
+
+#ifdef CABLE_TEMPERATURE_MONITORING
+// Strict decimal string -> int32_t, for arguments the callee range-checks.
+// Unlike dtoi32(), rejects an empty string, any non-digit, and any value
+// outside int32_t - so an oversized argument is NAKed instead of wrapping
+// around into the valid range. Returns 0 on success.
+static int8_t dtoi32Checked(const char *s,int32_t *out)
+{
+  uint8_t minus = 0;
+  if (*s == '-') {
+    minus = 1;
+    s++;
+  }
+  if (!*s) return 1;
+
+  uint32_t u = 0;
+  while (*s) {
+    if ((*s < '0') || (*s > '9')) return 1;
+    uint8_t d = (uint8_t)(*(s++) - '0');
+    if (u > (0x80000000UL - d) / 10) return 1; // u*10+d would exceed 2^31
+    u = u*10 + d;
+  }
+  if (!minus && (u > 0x7fffffffUL)) return 1;
+
+  *out = minus ? (int32_t)(0UL - u) : (int32_t)u;
+  return 0;
+}
+#endif // CABLE_TEMPERATURE_MONITORING
 
 #ifdef RAPI_I2C
 //get data from master - HINT: this is a ISR call!
@@ -309,6 +340,39 @@ int EvseRapiProcessor::processCmd()
       g_EvseController.Enable();
       rc = 0;
       break;
+#ifdef RELAY_HEALTH
+    case 'H': // reset relay Health/life estimate (e.g. after relay replacement)
+      g_RelayHealth.ResetLifeEstimate();
+#ifdef ADVPWR
+      g_EvseController.ResetStuckRelayRecoveryCnt();
+#endif // ADVPWR
+      rc = 0;
+      break;
+#endif // RELAY_HEALTH
+#ifdef ADVPWR
+    case 'K': // run stucK relay recovery cycle manually
+      if (!g_EvseController.EvConnected() &&
+          (g_EvseController.GetPilot()->GetState() != PILOT_STATE_N12)) {
+        g_EvseController.AttemptStuckRelayRecovery();
+        rc = 0;
+      }
+      // else: refuse - EV connected (unsafe to cycle the relay under load),
+      // or pilot at N12 (e.g. disabled), where an EV can't be detected
+      break;
+#endif // ADVPWR
+#ifdef GFI_SELFTEST_DIAG
+    case 'Q': // run GFI self test now; read the details with $GQ
+      {
+        int8_t r = g_EvseController.RunGfiSelfTest();
+        if (r >= 0) {
+          sprintf(buffer,"%d",(int)r);
+          bufCnt = 1;
+          rc = 0;
+        }
+        // else: refuse - relay closed or GFI fault active
+      }
+      break;
+#endif // GFI_SELFTEST_DIAG
     case 'F': // enable/disable feature
       if (tokenCnt == 3) {
 	u1.u8 = (uint8_t)(*tokens[2] - '0');
@@ -320,6 +384,11 @@ int EvseRapiProcessor::processCmd()
 	    g_EvseController.ButtonEnable(u1.u8);
 	    break;
 #endif // BTN_MENU
+#ifdef CABLE_TEMPERATURE_MONITORING
+	  case 'C': // Cable temperature monitoring
+	    g_CableTempMonitor.Enable(u1.u8);
+	    break;
+#endif // CABLE_TEMPERATURE_MONITORING
 	  case 'D': // diode check
 	    g_EvseController.EnableDiodeCheck(u1.u8);
 	    break;
@@ -509,8 +578,10 @@ int EvseRapiProcessor::processCmd()
 	}
 	else {
 	  if (tokenCnt == 3) {
-	    // just make volatile no matter what character specified
-	    u1.u8 = 1; // nosave = 1
+	    // just make volatile no matter what character specified.
+	    // A volatile override may exceed the EEPROM default, up to
+	    // the hardware max (nosave = 2).
+	    u1.u8 = 2;
 	  }
 	  else {
 	    u1.u8 = 0; // nosave = 0
@@ -580,6 +651,29 @@ int EvseRapiProcessor::processCmd()
       }
       break;
 #endif // VOLTMETER
+#ifdef CABLE_TEMPERATURE_MONITORING
+    case 'N': // set cable temperature sensor config
+      // n.b. values are passed through as int32_t - narrowing them here would
+      // wrap an out-of-range argument into range instead of NAKing it - and
+      // parsed with dtoi32Checked() so one too big for int32_t is NAKed too
+      if ((tokenCnt == 3) || (tokenCnt == 7)) {
+        int32_t a[6];
+        int8_t bad = 0;
+        for (int8_t i=1;i < tokenCnt;i++) {
+          if (dtoi32Checked(tokens[i],&a[i-1])) bad = 1;
+        }
+        if (!bad) {
+          if (tokenCnt == 3) { // $SN idx pin - reassign the input pin only
+            rc = g_CableTempMonitor.SetPin(a[0],a[1]);
+          }
+          else { // $SN idx pin r25 beta offset panic
+            rc = g_CableTempMonitor.SetCfg(a[0],a[1],a[2],a[3],a[4],a[5]);
+          }
+        }
+      }
+      break;
+#endif // CABLE_TEMPERATURE_MONITORING
+
 #ifdef DELAYTIMER     
     case 'T': // timer
       if (tokenCnt == 5) {
@@ -655,6 +749,15 @@ int EvseRapiProcessor::processCmd()
         }
       }
       break;
+
+#ifdef RELAY_ZC_SWITCH
+    case 'Z': // set relay-open current zero threshold (mA)  $SZ ma
+      if (tokenCnt == 2) {
+        g_EvseController.SetCurrentZeroThresholdMa((uint16_t)dtoi32(tokens[1]));
+        rc = 0;
+      }
+      break;
+#endif // RELAY_ZC_SWITCH
 
     }
     break;
@@ -816,6 +919,31 @@ int EvseRapiProcessor::processCmd()
       rc = 0;
       break;
 #endif // VOLTMETER
+#ifdef CABLE_TEMPERATURE_MONITORING
+    case 'N': // get cable temperatures, or one sensor's config
+      if (tokenCnt == 1) {
+        sprintf(buffer,"%d %d %d %d",
+                (int)g_CableTempMonitor.GetTempC10(CABLE_TEMP_EV1),
+                (int)g_CableTempMonitor.GetTempC10(CABLE_TEMP_EV2),
+                (int)g_CableTempMonitor.GetTempC10(CABLE_TEMP_IN1),
+                (int)g_CableTempMonitor.GetTempC10(CABLE_TEMP_IN2));
+        bufCnt = 1; // flag response text output
+        rc = 0;
+      }
+      else if (tokenCnt == 2) {
+        int32_t ctidx;
+        const CABLE_TEMP_CFG *ctc = (!dtoi32Checked(tokens[1],&ctidx) &&
+                                     (ctidx >= 0) && (ctidx < CABLE_TEMP_SENSOR_CNT))
+          ? g_CableTempMonitor.GetCfg((uint8_t)ctidx) : 0;
+        if (ctc) {
+          sprintf(buffer,"%d %u %u %d %d",(int)ctc->pin,(unsigned)ctc->r25,
+                  (unsigned)ctc->beta,(int)ctc->offset,(int)ctc->panic);
+          bufCnt = 1; // flag response text output
+          rc = 0;
+        }
+      }
+      break;
+#endif // CABLE_TEMPERATURE_MONITORING
 #ifdef TEMPERATURE_MONITORING
     case 'O':
       u1.i = g_TempMonitor.m_panicTemperature;
@@ -865,6 +993,13 @@ int EvseRapiProcessor::processCmd()
       rc = 0;
       break;
 #endif // KWH_RECORDING
+#ifdef GFI_SELFTEST_DIAG
+    case 'Q': // get last GFI self test diagnostics
+      g_EvseController.GetGfiSelfTestDiag(buffer);
+      bufCnt = 1;
+      rc = 0;
+      break;
+#endif // GFI_SELFTEST_DIAG
     case 'V': // get version
       GetVerStr(buffer);
       strcat(buffer," ");
@@ -881,12 +1016,44 @@ int EvseRapiProcessor::processCmd()
       break;
 #endif //HEARTBEAT_SUPERVISION
 #ifdef RELAY_ZC_SWITCH
-    case 'Z': // get AC frequency
-      sprintf(buffer,"%u", g_EvseController.GetAcFreqX100());
+    case 'Z': // get AC frequency + relay-open current zero threshold
+      sprintf(buffer,"%u %u", g_EvseController.GetAcFreqX100(),
+              g_EvseController.GetCurrentZeroThresholdMa());
+      bufCnt = 1;
+      rc = 0;
+      break;
+    case 'W': // get relay Wear/life diagnostics
+      sprintf(buffer,"%u %ld %u %u",
+              g_EvseController.GetRelayHotSwitchCnt(),
+              (long)g_EvseController.GetLastRelayOpenCurrentMa(),
+              g_EvseController.GetRelayCloseTransitMs(),
+              g_EvseController.GetRelayOpenTransitMs());
       bufCnt = 1;
       rc = 0;
       break;
 #endif // RELAY_ZC_SWITCH
+#ifdef RELAY_HEALTH
+    case 'L': // get relay Life/health estimate
+      // buffer is sized for the widest possible reply (RAPI_GL_MAX_LEN, see
+      // open_evse.h); snprintf is belt and braces
+      snprintf(buffer,ESRAPI_BUFLEN,"%u %u %lu %u %u %u %u %u %u",
+              (unsigned)g_RelayHealth.GetLifeRemainingPct(),
+              (unsigned)g_RelayHealth.GetColdOpenCnt(),
+              (unsigned long)g_RelayHealth.GetElecDamageX1e6(),
+              (unsigned)g_RelayHealth.GetTransitBaselineMs(),
+              (unsigned)g_RelayHealth.TransitDriftWarning(),
+              (unsigned)g_RelayHealth.GetThermalIndexX100(),
+              (unsigned)g_RelayHealth.GetThermalBaselineX100(),
+              (unsigned)g_RelayHealth.ThermalWarningLevel(),
+#ifdef ADVPWR
+              (unsigned)g_EvseController.GetStuckRelayRecoveryCnt());
+#else
+              (unsigned)0);
+#endif // ADVPWR
+      bufCnt = 1;
+      rc = 0;
+      break;
+#endif // RELAY_HEALTH
 
     case 'R': // get relay enable status  $GR
       sprintf(buffer,"%d %d %d",

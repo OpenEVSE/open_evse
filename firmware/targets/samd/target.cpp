@@ -1,9 +1,10 @@
 #include "open_evse.h"
+#include <wiring_private.h> // pinPeripheral()
 
 ExternalEEPROM g_eeprom;
 
 //                                               A/B  B/C  C/D  D DS
-THRESH_DATA J1772EVSEController::m_ThreshData = {3948,3539,3258,0,492};
+THRESH_DATA J1772EVSEController::m_ThreshData = {3932,3517,3100,0,492};
 
 #ifdef MCU_ID_LEN
 // mcuid *must* be of size MCU_ID_LEN
@@ -126,6 +127,10 @@ void gmiAdcEnd()
 void DigitalPin::init(uint32_t pinnum,int idxjunk,PinMode mode)
 {
   _pinNum = pinnum;
+
+  const PinDescription *pinDesc = &g_APinDescription[pinnum];
+  _port = pinDesc->ulPort;
+  _mask = (1ul << pinDesc->ulPin);
   if (mode == INP) {
     _pinMode = INPUT;
   }
@@ -135,8 +140,125 @@ void DigitalPin::init(uint32_t pinnum,int idxjunk,PinMode mode)
   else {
     _pinMode = OUTPUT;
   }
+
   pinMode(_pinNum,_pinMode);
 }
+
+
+// Helper function to wait for ADC register synchronization
+static inline void adcSync() {
+  while (ADC->STATUS.bit.SYNCBUSY);
+}
+
+bool AdcPin::_adcInitDone = false;
+
+void AdcPin::_adcInit() {
+  // 1. Enable the APB clock for the ADC so the CPU can talk to it
+  PM->APBCMASK.reg |= PM_APBCMASK_ADC;
+
+  // 2. Set up the Peripheral Clock (GCLK) for the ADC
+  // We attach GCLK0 (48MHz) to the ADC
+  GCLK->CLKCTRL.reg = GCLK_CLKCTRL_CLKEN | 
+                      GCLK_CLKCTRL_GEN_GCLK0 | 
+                      GCLK_CLKCTRL_ID_ADC;
+  while (GCLK->STATUS.bit.SYNCBUSY); // Wait for clock sync
+
+  // 3. Load factory calibration values from NVM (Non-Volatile Memory)
+  // This maintains ADC accuracy even at high speeds
+  uint32_t bias = (*((uint32_t *) ADC_FUSES_BIASCAL_ADDR) & ADC_FUSES_BIASCAL_Msk) >> ADC_FUSES_BIASCAL_Pos;
+  // LINEARITY_CAL is 8 bits split across two NVM words: bits 4:0 come from
+  // LINEARITY_0, bits 7:5 from LINEARITY_1 (same as the core's wiring.c)
+  uint32_t linearity = (*((uint32_t *) ADC_FUSES_LINEARITY_0_ADDR) & ADC_FUSES_LINEARITY_0_Msk) >> ADC_FUSES_LINEARITY_0_Pos;
+  linearity |= ((*((uint32_t *) ADC_FUSES_LINEARITY_1_ADDR) & ADC_FUSES_LINEARITY_1_Msk) >> ADC_FUSES_LINEARITY_1_Pos) << 5;
+
+  adcSync();
+  ADC->CALIB.reg = ADC_CALIB_BIAS_CAL(bias) | ADC_CALIB_LINEARITY_CAL(linearity);
+
+  // 4. Configure CTRLB: 12-bit resolution & a faster Prescaler
+  // DIV64 runs the ADC clock at 48MHz / 64 = 750kHz (well within datasheet specs for high speed)
+  // For maximum speed, change DIV64 to DIV32 (1.5MHz clock, slightly noisier)
+  adcSync();
+  ADC->CTRLB.reg = ADC_CTRLB_PRESCALER_DIV64 | 
+                   ADC_CTRLB_RESSEL_12BIT;
+
+  // 5. Configure Reference and Input settings
+  // Set reference to internal VCC/2 (approx 1.65V) and half gain so we can measure the full 0-3.3V scale
+  adcSync();
+  ADC->REFCTRL.reg = ADC_REFCTRL_REFSEL_INTVCC1; // VCC/2
+  
+  adcSync();
+  ADC->INPUTCTRL.reg = ADC_INPUTCTRL_GAIN_DIV2 | 
+                       ADC_INPUTCTRL_MUXNEG_GND; // Single-ended to GND
+
+  // 6. Set sample time to minimum (0)
+  adcSync();
+  ADC->SAMPCTRL.reg = 0x00; 
+
+  // 7. Enable the ADC
+  adcSync();
+  ADC->CTRLA.bit.ENABLE = 1;
+  adcSync();
+}
+
+// WARNING: ONLY WORKS ON A0-A5, just like analogRead()
+uint32_t AdcPin::read() {
+  if (!_adcInitDone) {
+    _adcInit();
+    _adcInitDone = true;
+  }
+  else {
+    // Enable the ADC in case someone else turned it off
+    adcSync();
+    ADC->CTRLA.bit.ENABLE = 1;
+    adcSync();
+  }
+
+  // Map Arduino pins to SAMD21 ADC channel (MUXPOS)
+  uint32_t pinMux = 0;
+  
+  // Safe mapping for standard Arduino Zero analog pins (A0 to A5)
+  switch(_pinNum) {
+    case A0: pinMux = ADC_INPUTCTRL_MUXPOS_PIN0;  break; // AIN0
+    case A1: pinMux = ADC_INPUTCTRL_MUXPOS_PIN2;  break; // AIN2
+    case A2: pinMux = ADC_INPUTCTRL_MUXPOS_PIN3;  break; // AIN3
+    case A3: pinMux = ADC_INPUTCTRL_MUXPOS_PIN4;  break; // AIN4
+    case A4: pinMux = ADC_INPUTCTRL_MUXPOS_PIN5;  break; // AIN5
+    case A5: pinMux = ADC_INPUTCTRL_MUXPOS_PIN10; break; // AIN10
+    default: return -1; // Invalid pin
+  }
+
+  // The ADC only sees a pin routed to it through the PORT pin mux
+  // (peripheral function B, analog) - the datasheet requires it, and it
+  // also turns off the digital input buffer. analogRead() does this on every
+  // call; doing it once per AdcPin is enough, as nothing else reconfigures
+  // these pins.
+  if (!_pinMuxDone) {
+    pinPeripheral(_pinNum,PIO_ANALOG);
+    _pinMuxDone = true;
+  }
+
+  // 1. Select the correct analog pin (MUXPOS)
+  adcSync();
+  ADC->INPUTCTRL.bit.MUXPOS = pinMux;
+
+  // 2. Clear any stale Result Ready flag *before* starting, so the wait
+  //    below can only see this conversion's completion. (Clearing it after
+  //    START races the conversion: if it finished first, its flag was wiped
+  //    and the wait below would never end.)
+  ADC->INTFLAG.reg = ADC_INTFLAG_RESRDY;
+
+  // 3. Trigger conversion using software trigger
+  adcSync();
+  ADC->SWTRIG.bit.START = 1;
+
+  // 4. Wait for the conversion to complete
+  while (ADC->INTFLAG.bit.RESRDY == 0);
+
+  // 5. Return the 12-bit result (0 to 4095)
+  return ADC->RESULT.reg;
+}
+
+
 
 
 // platform-specific init

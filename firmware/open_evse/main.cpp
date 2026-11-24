@@ -2414,6 +2414,13 @@ void ProcessInputs()
   WDT_RESET();
   g_TempMonitor.Read();  //   update temperatures once per second
 #endif
+#ifdef CABLE_TEMPERATURE_MONITORING
+  WDT_RESET();
+  g_CableTempMonitor.Read(); // update cable NTC temperatures once per second
+#endif
+#ifdef RELAY_HEALTH
+  g_RelayHealth.Update();
+#endif
 }
 
 
@@ -2432,10 +2439,20 @@ void EvseReset()
   g_TempMonitor.Init();
 #endif
 
+#ifdef RELAY_HEALTH
+  g_RelayHealth.Init();
+#endif
+
   g_EvseController.Init();
 #ifdef DELAYTIMER
   g_DelayTimer.Init(); // this *must* run after g_EvseController.Init() because it sets one of the vFlags
 #endif  // DELAYTIMER
+
+#ifdef CABLE_TEMPERATURE_MONITORING
+  // *must* run after g_EvseController.Init() - it resolves the PP_READ pin
+  // ownership against the controller's loaded PP auto-ampacity flag
+  g_CableTempMonitor.Init();
+#endif // CABLE_TEMPERATURE_MONITORING
 
 #ifdef PP_AUTO_AMPACITY
   g_ACCController.Enable(g_EvseController.PPAutoAmpacityIsEnabled());
