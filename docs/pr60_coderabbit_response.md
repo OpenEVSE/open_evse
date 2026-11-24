@@ -17,7 +17,7 @@ build. ATmega328P usage is now RAM 1166 / 2048 (56.9%) and flash 30060 / 32768
 | Finding | Verdict | Fix |
 |---|---|---|
 | `J1772EvseController.cpp:616` — `waitRelayTransit()` runs inside `gfi_isr()` | **Valid, severe.** The loop waits on `millis()`, which doesn't advance in ISR context, and it calls `WDT_RESET()`. If the relay never reports open (for example, welded), the controller hangs forever and the watchdog never fires. | `chargingOff(1)` (emergency) no longer waits for transit confirmation. It records `RELAY_TRANSIT_TIMEOUT_MS` ("not measured"), and RelayHealth ignores that value. Non-emergency opens still measure transit. |
-| `J1772EvseController.cpp:2216` — EV can connect during the blocking stuck-relay recovery | **Valid.** The caller checks `EvConnected()` once, but recovery can run for tens of seconds. | `AttemptStuckRelayRecovery()` calls `ReadPilot()` before every `chargingOn()`. If an EV is connected, it returns "not recovered" with the relay open. |
+| `J1772EvseController.cpp:2216` — EV can connect during the blocking stuck-relay recovery | **Valid.** The caller checks `EvConnected()` once, but recovery can run for tens of seconds. | `AttemptStuckRelayRecovery()` calls `ReadPilot()` before every `chargingOn()`. If an EV is connected, it returns "not recovered" with the relay open. This only works when the pilot isn't N12; see round 2 below. |
 | `samd/Gfi.cpp:175-178` — GFI input not re-read after the settle delay | **Valid.** If the output goes high during the settle, `testInProgress` absorbs the edge. After the test it stays high with no new rising edge, so a real fault would never trip. | After the settle, if the pin still reads high, `SelfTest()` clears `testInProgress` and returns 3 (failed). |
 
 ## RAPI
@@ -66,9 +66,24 @@ need no changes.
 | `target.cpp:235` — `RESRDY` cleared after `START` | **Valid.** If the conversion finished first, its flag was wiped and the wait never ended. | `RESRDY` is now cleared before `SWTRIG.START`. |
 | `target.cpp:228` — pin never routed to the ADC | **Valid.** The datasheet requires PMUX function B. | `AdcPin::read()` calls `pinPeripheral(pin, PIO_ANALOG)` once per instance, on the first read. That can't happen in `init()`, which may run from a global constructor before the core's `init()`. |
 
+## Round 2 (CodeRabbit run `408d544b`, on `4e4f144`)
+
+CodeRabbit posted 3 more findings against the round-1 fixes. All 3 were
+valid, and all 3 are fixed in the follow-up commit.
+
+| Finding | Verdict | Fix |
+|---|---|---|
+| `docs/pr60_coderabbit_response.md:20` — the recovery EV check is blind with the pilot at N12 | **Valid.** `Disable()` sets the pilot to N12, and `ReadPilot()` only updates `EvConnected()` when the pilot isn't N12. So `$FK` on a disabled EVSE could close the relay onto an EV plugged in since the last check. The automatic path never runs in N12, because `Update()` returns early when the EVSE is disabled. | `AttemptStuckRelayRecovery()` refuses up front if the pilot is N12, and doesn't count it as an attempt. `$FK` replies `$NK` in N12. The claim in the round-1 table is corrected, and the `$FK` docs are updated. |
+| `J1772EvseController.cpp:1043` — recovery keeps cycling after a GFI trip | **Valid.** The ISR opens the relay and latches `m_Gfi.Fault()`, but the loop's next `chargingOn()` closes the relay again before `Update()` sees the fault. A trip during `chargingOn()`'s zero-cross wait or close delay is released by the ISR, and then `chargingOn()` drives the coil again. | Recovery checks the GFI fault latch before each close, and on every loop iteration while the relay is closed, starting right after `chargingOn()` returns. On a fault it opens the relay and returns "not recovered". A trip that lands inside `chargingOn()` can still re-energize the relay for that call's own close delay (`m_relayCloseMs`) before it's opened again. That is the same window as the normal charging path, where `Update()` reopens the relay. The fault latch is `Gfi::Fault()`. `ECVF_GFI_TRIPPED` couldn't be used because it means "tripped since boot" and is never cleared. |
+| `samd/Gfi.cpp:199` — an edge between the final read and clearing `testInProgress` is absorbed as success | **Valid.** | Clearing `testInProgress`, the final pin read and clearing `m_GfiFault` now happen in one block with interrupts off. A rising edge in that block is either seen by the read, which fails the test with `m_GfiFault` untouched, or stays pending and goes through the real trip path once interrupts come back on. The ATmega328P `Gfi::SelfTest()` had the same gap and never re-read the pin at all. It gets the same fix, though CodeRabbit didn't flag it. |
+
+Build check after round 2: `m328p_core_lcd`, `samd` and `samd_ice_dev` all
+build. ATmega328P flash is now 30138 / 32768 (92.0%); RAM is unchanged.
+
 ## Files touched
 
 `firmware/open_evse/{CableTempMonitor.cpp,CableTempMonitor.h,J1772EvseController.cpp,J1772EvseController.h,RelayHealth.cpp,RelayHealth.h,open_evse.h,rapi_proc.cpp,rapi_proc.h}`,
 `firmware/targets/m328p/pindefs.h`,
 `firmware/targets/samd/{Gfi.cpp,target.cpp,target.h}`,
 `firmware/CHANGELOG`, `docs/cable-temperature-monitoring.md`.
+Round 2 also changes `firmware/targets/m328p/Gfi.cpp`.

@@ -109,8 +109,19 @@ uint8_t Gfi::SelfTest()
   wdt_delay(1000);
 #endif // OPENEVSE_2
 
-  m_GfiFault = 0;
+  // Stand the self-test down, then re-check the output, as one atomic step.
+  // If the output went high during the settle and is still high, there is
+  // no rising edge left to fire gfi_isr(), so a real fault that started in
+  // this window would never trip - fail the test instead (m_GfiFault left
+  // as is). With interrupts masked, an edge here is either seen by the read
+  // or left pending, and runs the real trip path once unmasked - it can't
+  // be absorbed as "test success" or have its fault cleared below.
+  noInterrupts();
   testInProgress = 0;
+  uint8_t stillHigh = pin.read();
+  if (!stillHigh) m_GfiFault = 0;
+  interrupts();
+  if (stillHigh) return 3;
 
   return !testSuccess;
 }

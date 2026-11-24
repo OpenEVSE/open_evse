@@ -1018,12 +1018,27 @@ uint8_t J1772EVSEController::RelayIsStuck(uint8_t acpinstate)
 // accounted for the same way. No EV is connected while this runs (caller's
 // responsibility to check), so every open here is a cold open.
 //
+// GFI fault latch as seen by AttemptStuckRelayRecovery(); 0 without GFI
+uint8_t J1772EVSEController::recoveryGfiFault()
+{
+#ifdef GFI
+  return m_Gfi.Fault();
+#else
+  return 0;
+#endif
+}
+
 // Blocking: worst case is 3 rounds * 5 toggles * up to 2s per toggle (on+off)
 // = well under a minute, but the caller (Update() or the $FK RAPI handler)
 // is stalled for the duration. WDT_RESET() every iteration; no single wait
 // segment approaches WATCHDOG_TIMEOUT_SEC.
 uint8_t J1772EVSEController::AttemptStuckRelayRecovery()
 {
+  // With the pilot at -12V (N12, e.g. EVSE disabled) ReadPilot() cannot
+  // update EvConnected(), so the per-close EV check below would be blind -
+  // an EV plugged in since the caller's check would go undetected. Refuse.
+  if (m_Pilot.GetState() == PILOT_STATE_N12) return 0;
+
   if (m_StuckRelayRecoveryCnt < 0xfffe) {
     eeprom_write_word((uint16_t*)EOFS_STUCK_RELAY_RECOVERY_CNT,++m_StuckRelayRecoveryCnt);
   }
@@ -1042,9 +1057,24 @@ uint8_t J1772EVSEController::AttemptStuckRelayRecovery()
       ReadPilot();
       if (EvConnected()) return 0;
 
+      // A GFI trip mid-recovery opens the relay from the ISR and latches
+      // m_Gfi.Fault(), but nothing stops this loop closing it again before
+      // Update() handles the fault. Stop at the latch - checked before each
+      // close, while closed, and right after chargingOn() returns (a trip
+      // during its zero-cross wait / close delay is released by the ISR,
+      // but chargingOn() then drives the coil again). Relay left open;
+      // reported as not recovered.
+      if (recoveryGfiFault()) return 0;
+
       chargingOn();
       unsigned long start = millis();
-      do { WDT_RESET(); } while ((millis() - start) < toggleMs);
+      do {
+        WDT_RESET();
+        if (recoveryGfiFault()) {
+          chargingOff();
+          return 0;
+        }
+      } while ((millis() - start) < toggleMs);
 
       chargingOff();
       start = millis();

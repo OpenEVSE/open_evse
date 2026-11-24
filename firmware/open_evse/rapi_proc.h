@@ -133,7 +133,10 @@ FK - run stucK relay recovery cycle manually (requires ADVPWR)
  within a round) to try to free a welded/stuck contact, same routine the
  controller runs automatically on EVSE_STATE_STUCK_RELAY entry. NAK'd if
  an EV is connected (unsafe to cycle the relay under load) - check $G0
- first. Does not itself report whether the relay came free - check $GS
+ first - or if the pilot is at -12V (N12, e.g. EVSE disabled), where a
+ connected EV can't be detected. Stops early, relay open, if an EV is
+ plugged in or a GFI fault latches mid-cycle. Does not itself report
+ whether the relay came free - check $GS
  (state) or $GL (recovery counter) afterward. Blocking: up to ~30s worst
  case (3 rounds x 5 toggles x up to 2s on+off, plus zero-cross/transit
  overhead) before the response comes back.

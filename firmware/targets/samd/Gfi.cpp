@@ -192,21 +192,25 @@ uint8_t Gfi::SelfTest()
   // Same as the AVR target.
   wdt_delay(1000);
 
-  // Re-check before standing the self-test down. If the output went high
-  // during the settle and is still high, clearing testInProgress now would
-  // leave it high with no rising edge left to fire gfi_isr() - a real fault
-  // that started in this window would never trip. Fail the test instead.
-  if (pin.read()) {
-    testInProgress = 0;
+  // Stand the self-test down, then re-check the output, as one atomic step.
+  // If the output went high during the settle and is still high, there is
+  // no rising edge left to fire gfi_isr(), so a real fault that started in
+  // this window would never trip - fail the test instead (m_GfiFault left
+  // as is). Clearing testInProgress *before* the read closes the gap where
+  // an edge between the read and the clear would be absorbed as "test
+  // success": with interrupts masked, an edge here is either seen by the
+  // read or left pending, and runs the real trip path once unmasked.
+  noInterrupts();
+  testInProgress = 0;
+  uint8_t stillHigh = pin.read();
+  if (!stillHigh) m_GfiFault = 0;
+  interrupts();
+  if (stillHigh) {
 #ifdef GFI_SELFTEST_DIAG
     diagResult = 3;
 #endif
     return 3;
   }
-
-  m_GfiFault = 0;
-
-  testInProgress = 0;
 
 #ifdef GFI_SELFTEST_DIAG
   diagResult = !testSuccess;

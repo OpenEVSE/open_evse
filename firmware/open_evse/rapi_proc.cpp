@@ -351,11 +351,13 @@ int EvseRapiProcessor::processCmd()
 #endif // RELAY_HEALTH
 #ifdef ADVPWR
     case 'K': // run stucK relay recovery cycle manually
-      if (!g_EvseController.EvConnected()) {
+      if (!g_EvseController.EvConnected() &&
+          (g_EvseController.GetPilot()->GetState() != PILOT_STATE_N12)) {
         g_EvseController.AttemptStuckRelayRecovery();
         rc = 0;
       }
-      // else: refuse - EV connected, unsafe to cycle the relay under load
+      // else: refuse - EV connected (unsafe to cycle the relay under load),
+      // or pilot at N12 (e.g. disabled), where an EV can't be detected
       break;
 #endif // ADVPWR
 #ifdef GFI_SELFTEST_DIAG

@@ -648,13 +648,15 @@ int GetHearbeatTrigger();
   // Attempts to free a welded/stuck relay by cycling it: STUCK_RELAY_RECOVERY_CYCLES
   // on/off toggles per round (each toggle shorter than the last), for up to
   // STUCK_RELAY_RECOVERY_ROUNDS rounds, re-testing the contacts after each
-  // round. Caller's responsibility to ensure it's safe to actuate the relay
-  // (i.e. no EV connected) - this does not check EvConnected() itself, since
-  // the automatic caller (Update()) and the manual RAPI caller ($FK) apply
-  // that policy differently. Returns 1 if the contacts tested free
-  // afterward, 0 if still stuck. Always counts as one attempt in
+  // round. Callers must still check there's no EV connected before calling.
+  // As a backstop it also re-reads the pilot before every close and stops,
+  // relay open, if an EV appears or a GFI fault latches; it refuses outright
+  // (without counting an attempt) when the pilot is N12, where an EV can't
+  // be detected. Returns 1 if the contacts tested free afterward, 0 if still
+  // stuck, refused or abandoned. Otherwise counts as one attempt in
   // GetStuckRelayRecoveryCnt(), regardless of outcome.
   uint8_t AttemptStuckRelayRecovery();
+  uint8_t recoveryGfiFault();
 #endif // ADVPWR
 
 #ifdef STATE_TRANSITION_REQ_FUNC
