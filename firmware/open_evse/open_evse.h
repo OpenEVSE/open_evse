@@ -542,7 +542,16 @@ extern AutoCurrentCapacityController g_ACCController;
 // 10-byte MCU id needs only 33 for $GI, so the LCD-derived 34 still fits;
 // keep AVR unchanged so its RAM footprint does not grow. See the matching
 // #error guard in rapi_proc.cpp.
-#ifdef TARGET_SAMD
+//
+// With RELAY_HEALTH, $GL is the longest reply on every target. Its nine
+// fields at their widest are
+//   "100 65534 4294967295 65535 1 65535 65535 2 65534" = RAPI_GL_MAX_LEN (48)
+// so '$' + "OK" + ' ' (4) + 48 + " :XX" (4) + "^XX" + CR (4) + NUL (1) = 61.
+// That costs AVR ~25 bytes of RAM, which it has room for.
+#define RAPI_GL_MAX_LEN 48
+#if defined(RELAY_HEALTH)
+#define TMP_BUF_SIZE (4 + RAPI_GL_MAX_LEN + 4 + 4 + 1)
+#elif defined(TARGET_SAMD)
 #define TMP_BUF_SIZE 48
 #elif defined(CABLE_TEMPERATURE_MONITORING)
 // $GN reports four cable temperatures; its worst case is four 5-character
@@ -643,10 +652,10 @@ extern AutoCurrentCapacityController g_ACCController;
 // RELAY_HEALTH relay contact-life estimation (see RelayHealth.h)
 #define EOFS_RELAY_ELEC_DAMAGE_X1E6      44 // 4 bytes - Miner's-rule electrical-damage accumulator (millionths of rated electrical life consumed); 0xffffffff = unformatted, treat as 0
 #define EOFS_RELAY_COLD_OPEN_CNT         48 // 2 bytes - cumulative cold (non-arced) relay-open count; 0xffff = unformatted, treat as 0
-#define EOFS_RELAY_TRANSIT_BASELINE_MS   50 // 2 bytes - learned open-transit-time baseline (ms)
-#define EOFS_RELAY_TRANSIT_BASELINE_N    52 // 1 byte  - # samples averaged into the transit baseline so far
-#define EOFS_RELAY_THERMAL_BASELINE_X100 53 // 2 bytes - self-learned thermal-index baseline H0 (deltaT/I^2 x100)
-#define EOFS_RELAY_THERMAL_BASELINE_N    55 // 1 byte  - # samples averaged into the thermal baseline so far
+#define EOFS_RELAY_TRANSIT_BASELINE_X100   50 // 2 bytes - learned open-transit-time baseline (ms x100)
+#define EOFS_RELAY_TRANSIT_BASELINE_N      52 // 1 byte  - # samples averaged into the transit baseline so far, | RELAY_HEALTH_BASELINE_N_TAG
+#define EOFS_RELAY_THERMAL_BASELINE_X10000 53 // 2 bytes - self-learned thermal-index baseline H0 (deltaT/I^2 x10000)
+#define EOFS_RELAY_THERMAL_BASELINE_N      55 // 1 byte  - # samples averaged into the thermal baseline so far, | RELAY_HEALTH_BASELINE_N_TAG
 
 // stuck-relay auto-recovery
 #define EOFS_STUCK_RELAY_RECOVERY_CNT    56 // 2 bytes - cumulative count of stuck-relay recovery attempts run; 0xffff = unformatted, treat as 0

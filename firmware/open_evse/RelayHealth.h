@@ -40,30 +40,47 @@
 // contact voltage drop at a known current) - that requires a differential
 // voltage sensor across the contacts that this hardware does not have.
 
+// The two learned-baseline sample counts are stored in EEPROM tagged with
+// this value in their top bits, marking the current baseline encoding
+// (transit x100 ms, thermal x10000). An untagged count - an erased byte, or
+// one written by an earlier build that stored the baselines at coarser
+// scales - restarts learning rather than misreading the old baseline.
+#define RELAY_HEALTH_BASELINE_N_TAG  0x40
+#define RELAY_HEALTH_BASELINE_N_MASK 0x3f
+
 class RelayHealth {
   uint32_t m_ElecDamageX1e6; // Miner's-rule electrical-damage accumulator (millionths of rated electrical life consumed); EEPROM-backed
+  uint64_t m_ElecDamageRem;  // sub-millionth remainder carried between hot opens so small ones still accumulate; RAM only
   uint16_t m_ColdOpenCnt;    // cumulative cold (non-arced) relay opens; EEPROM-backed, saturating
 
-  uint16_t m_TransitBaselineMs; // learned open-transit-time baseline (ms); EEPROM-backed
+  uint16_t m_TransitBaselineX100; // learned open-transit-time baseline (ms x100); EEPROM-backed
   uint8_t  m_TransitBaselineN;  // # samples averaged into the baseline so far; EEPROM-backed, locks at RELAY_HEALTH_TRANSIT_BASELINE_SAMPLES
   uint16_t m_LastOpenTransitMs; // most recent measured open-transit time, for the live/baseline ratio; not persisted
 
+  // OnRelayOpen() can run in ISR context (gfi_isr -> chargingOff(1)), so it
+  // only updates RAM and sets these; FlushDeferredEepromWrites() persists
+  // from the main loop
+  volatile uint8_t m_ElecDamageDirty;
+  volatile uint8_t m_TransitBaselineDirty;
+
 #ifdef TEMPERATURE_MONITORING
-  uint16_t m_ThermalBaselineX100;    // self-learned H0 (deltaT/I^2 x100); EEPROM-backed, locks after RELAY_HEALTH_THERMAL_BASELINE_SAMPLES
+  uint16_t m_ThermalBaselineX10000;  // self-learned H0 (deltaT/I^2 x10000); EEPROM-backed, locks after RELAY_HEALTH_THERMAL_BASELINE_SAMPLES
   uint8_t  m_ThermalBaselineN;       // # samples averaged into H0 so far; EEPROM-backed
   int16_t  m_SessionBaselineTempC10; // ambient temp captured at relay close, this session's deltaT reference
   uint8_t  m_SessionBaselineValid;
   unsigned long m_LastThermalSampleMs;
-  uint16_t m_LastThermalX100; // most recent completed-window sample; 0xffff = none yet this boot
+  uint16_t m_LastThermalX10000; // most recent completed-window sample; 0xffff = none yet this boot
 #endif
 
-  static uint32_t OneOpenDamageX1e6(int32_t currentMa);
+  uint32_t OneOpenDamageX1e6(int32_t currentMa);
 
 public:
   RelayHealth() {}
 
   void Init();
   void Update(); // call every main loop iteration
+  // persist what OnRelayOpen() deferred; main loop only, never from an ISR
+  void FlushDeferredEepromWrites();
 
   // call from J1772EVSEController::chargingOn() once the relay is confirmed closed
   void OnRelayClose();
@@ -75,12 +92,14 @@ public:
   uint32_t GetElecDamageX1e6() { return m_ElecDamageX1e6; }
   uint16_t GetColdOpenCnt() { return m_ColdOpenCnt; }
 
-  uint16_t GetTransitBaselineMs() { return m_TransitBaselineN >= RELAY_HEALTH_TRANSIT_BASELINE_SAMPLES ? m_TransitBaselineMs : 0xffff; }
+  // whole ms, rounded, for $GL; the drift check itself uses the x100 value
+  uint16_t GetTransitBaselineMs() { return m_TransitBaselineN >= RELAY_HEALTH_TRANSIT_BASELINE_SAMPLES ? (uint16_t)((m_TransitBaselineX100 + 50U) / 100U) : 0xffff; }
   uint8_t  TransitDriftWarning();
 
   // thermal signal: always declared so RAPI ($GL) has a stable response
   // shape regardless of build config. Without TEMPERATURE_MONITORING these
-  // report the "not available" sentinel (0xffff / 0).
+  // report the "not available" sentinel (0xffff / 0). Reported x100 (rounded)
+  // to keep $GL's documented scale; tracked and compared internally x10000.
   uint16_t GetThermalIndexX100();    // 0xffff = not available/not yet sampled
   uint16_t GetThermalBaselineX100(); // 0xffff = not available/not yet established
   uint8_t  ThermalWarningLevel();    // 0=ok/not available 1=watch 2=warn

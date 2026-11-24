@@ -45,6 +45,20 @@ static inline void gfiTestPinStrongDrive()
 
 void Gfi::Init(uint8_t v6)
 {
+#ifdef GFI_SELFTEST_DIAG
+  // $GQ must read "never run" (255) until a SelfTest() actually runs - e.g.
+  // when the self-test is disabled - not the zero-initialised 0 ("pass").
+  // Init() runs once, at boot (EvseReset() from setup()), before any
+  // SelfTest(), so this never discards a completed result.
+  diagResult = 0xff;
+  diagPinBefore = 0;
+  diagEdgeCnt = 0;
+  diagFirstEdgeMs = 0xffff;
+  diagStartMs = 0;
+  diagHighSamples = 0;
+  diagSamples = 0;
+  diagClearMs = 0xffff;
+#endif // GFI_SELFTEST_DIAG
 #ifdef GFI_SELFTEST
   // Drive the test pin low from boot. Otherwise PA06 floats (reset state)
   // until the first tone() call, leaving the test transistor's base undriven.
@@ -177,6 +191,18 @@ uint8_t Gfi::SelfTest()
   // edges are absorbed as test success rather than tripping a real fault.
   // Same as the AVR target.
   wdt_delay(1000);
+
+  // Re-check before standing the self-test down. If the output went high
+  // during the settle and is still high, clearing testInProgress now would
+  // leave it high with no rising edge left to fire gfi_isr() - a real fault
+  // that started in this window would never trip. Fail the test instead.
+  if (pin.read()) {
+    testInProgress = 0;
+#ifdef GFI_SELFTEST_DIAG
+    diagResult = 3;
+#endif
+    return 3;
+  }
 
   m_GfiFault = 0;
 

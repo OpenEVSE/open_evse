@@ -37,6 +37,9 @@
 #if defined(MCU_ID_LEN) && (TMP_BUF_SIZE < (3 + 1 + (2*MCU_ID_LEN) + 4 + 4 + 1))
 #error "TMP_BUF_SIZE too small for the $GI RAPI response on this target"
 #endif
+#if defined(RELAY_HEALTH) && (TMP_BUF_SIZE < (4 + RAPI_GL_MAX_LEN + 4 + 4 + 1))
+#error "TMP_BUF_SIZE too small for the $GL RAPI response"
+#endif
 
 const char RAPI_VER[] PROGMEM = RAPIVER;
 
@@ -87,6 +90,34 @@ uint32_t dtoi32(const char *s)
 
   return i;
 }
+
+#ifdef CABLE_TEMPERATURE_MONITORING
+// Strict decimal string -> int32_t, for arguments the callee range-checks.
+// Unlike dtoi32(), rejects an empty string, any non-digit, and any value
+// outside int32_t - so an oversized argument is NAKed instead of wrapping
+// around into the valid range. Returns 0 on success.
+static int8_t dtoi32Checked(const char *s,int32_t *out)
+{
+  uint8_t minus = 0;
+  if (*s == '-') {
+    minus = 1;
+    s++;
+  }
+  if (!*s) return 1;
+
+  uint32_t u = 0;
+  while (*s) {
+    if ((*s < '0') || (*s > '9')) return 1;
+    uint8_t d = (uint8_t)(*(s++) - '0');
+    if (u > (0x80000000UL - d) / 10) return 1; // u*10+d would exceed 2^31
+    u = u*10 + d;
+  }
+  if (!minus && (u > 0x7fffffffUL)) return 1;
+
+  *out = minus ? (int32_t)(0UL - u) : (int32_t)u;
+  return 0;
+}
+#endif // CABLE_TEMPERATURE_MONITORING
 
 #ifdef RAPI_I2C
 //get data from master - HINT: this is a ISR call!
@@ -621,18 +652,22 @@ int EvseRapiProcessor::processCmd()
 #ifdef CABLE_TEMPERATURE_MONITORING
     case 'N': // set cable temperature sensor config
       // n.b. values are passed through as int32_t - narrowing them here would
-      // wrap an out-of-range argument into range instead of NAKing it
-      if (tokenCnt == 3) { // $SN idx pin - reassign the input pin only
-        rc = g_CableTempMonitor.SetPin((int32_t)dtoi32(tokens[1]),
-                                       (int32_t)dtoi32(tokens[2]));
-      }
-      else if (tokenCnt == 7) { // $SN idx pin r25 beta offset panic
-        rc = g_CableTempMonitor.SetCfg((int32_t)dtoi32(tokens[1]),
-                                       (int32_t)dtoi32(tokens[2]),
-                                       (int32_t)dtoi32(tokens[3]),
-                                       (int32_t)dtoi32(tokens[4]),
-                                       (int32_t)dtoi32(tokens[5]),
-                                       (int32_t)dtoi32(tokens[6]));
+      // wrap an out-of-range argument into range instead of NAKing it - and
+      // parsed with dtoi32Checked() so one too big for int32_t is NAKed too
+      if ((tokenCnt == 3) || (tokenCnt == 7)) {
+        int32_t a[6];
+        int8_t bad = 0;
+        for (int8_t i=1;i < tokenCnt;i++) {
+          if (dtoi32Checked(tokens[i],&a[i-1])) bad = 1;
+        }
+        if (!bad) {
+          if (tokenCnt == 3) { // $SN idx pin - reassign the input pin only
+            rc = g_CableTempMonitor.SetPin(a[0],a[1]);
+          }
+          else { // $SN idx pin r25 beta offset panic
+            rc = g_CableTempMonitor.SetCfg(a[0],a[1],a[2],a[3],a[4],a[5]);
+          }
+        }
       }
       break;
 #endif // CABLE_TEMPERATURE_MONITORING
@@ -894,8 +929,9 @@ int EvseRapiProcessor::processCmd()
         rc = 0;
       }
       else if (tokenCnt == 2) {
-        int32_t ctidx = (int32_t)dtoi32(tokens[1]);
-        const CABLE_TEMP_CFG *ctc = ((ctidx >= 0) && (ctidx < CABLE_TEMP_SENSOR_CNT))
+        int32_t ctidx;
+        const CABLE_TEMP_CFG *ctc = (!dtoi32Checked(tokens[1],&ctidx) &&
+                                     (ctidx >= 0) && (ctidx < CABLE_TEMP_SENSOR_CNT))
           ? g_CableTempMonitor.GetCfg((uint8_t)ctidx) : 0;
         if (ctc) {
           sprintf(buffer,"%d %u %u %d %d",(int)ctc->pin,(unsigned)ctc->r25,
@@ -996,17 +1032,19 @@ int EvseRapiProcessor::processCmd()
 #endif // RELAY_ZC_SWITCH
 #ifdef RELAY_HEALTH
     case 'L': // get relay Life/health estimate
-      sprintf(buffer,"%u %u %lu %u %u %u %u %u %u",
-              g_RelayHealth.GetLifeRemainingPct(),
-              g_RelayHealth.GetColdOpenCnt(),
+      // buffer is sized for the widest possible reply (RAPI_GL_MAX_LEN, see
+      // open_evse.h); snprintf is belt and braces
+      snprintf(buffer,ESRAPI_BUFLEN,"%u %u %lu %u %u %u %u %u %u",
+              (unsigned)g_RelayHealth.GetLifeRemainingPct(),
+              (unsigned)g_RelayHealth.GetColdOpenCnt(),
               (unsigned long)g_RelayHealth.GetElecDamageX1e6(),
-              g_RelayHealth.GetTransitBaselineMs(),
-              g_RelayHealth.TransitDriftWarning(),
-              g_RelayHealth.GetThermalIndexX100(),
-              g_RelayHealth.GetThermalBaselineX100(),
-              g_RelayHealth.ThermalWarningLevel(),
+              (unsigned)g_RelayHealth.GetTransitBaselineMs(),
+              (unsigned)g_RelayHealth.TransitDriftWarning(),
+              (unsigned)g_RelayHealth.GetThermalIndexX100(),
+              (unsigned)g_RelayHealth.GetThermalBaselineX100(),
+              (unsigned)g_RelayHealth.ThermalWarningLevel(),
 #ifdef ADVPWR
-              g_EvseController.GetStuckRelayRecoveryCnt());
+              (unsigned)g_EvseController.GetStuckRelayRecoveryCnt());
 #else
               (unsigned)0);
 #endif // ADVPWR

@@ -66,8 +66,13 @@
 // per-source pin assignment
 #define CABLE_TEMP_PIN_NONE 0
 #define CABLE_TEMP_PIN_PP   1 // PP_READ  - ADC2 (328P) / PB09 (SAMD) - shared w/ proximity pilot
-#define CABLE_TEMP_PIN_PP2  2 // PP2_READ - ADC3 (328P) / PA04 (SAMD)
-#define CABLE_TEMP_PIN_MAX  2
+#define CABLE_TEMP_PIN_PP2  2 // PP2_READ - PA04 (SAMD); not available on the 328P, where ADC3 is the button
+#ifdef PP2_PIN
+#define CABLE_TEMP_PIN_MAX  CABLE_TEMP_PIN_PP2
+#else
+// target has no PP2_READ input (see its pindefs.h) - only PP_READ can be assigned
+#define CABLE_TEMP_PIN_MAX  CABLE_TEMP_PIN_PP
+#endif
 
 // top-of-divider pullup, in ohms. fixed by the hardware; override at build
 // time if your board is stuffed differently
@@ -110,7 +115,9 @@
 
 // clamps for user-supplied configuration
 #define CABLE_TEMP_MIN_R25    100
-#define CABLE_TEMP_MAX_R25  65535UL
+// 65535 (0xffff) is reserved: LoadCfg() reads it as an erased EEPROM word
+// and substitutes the default, so it must never be accepted as a setting
+#define CABLE_TEMP_MAX_R25  65534UL
 #define CABLE_TEMP_MIN_BETA  1000
 #define CABLE_TEMP_MAX_BETA  6000
 #define CABLE_TEMP_MIN_PANIC  300 //  30.0C
@@ -141,7 +148,9 @@ class CableTempMonitor {
   CABLE_TEMP_CFG m_Cfg[CABLE_TEMP_SENSOR_CNT];
   int16_t m_TempC10[CABLE_TEMP_SENSOR_CNT];
   AdcPin m_AdcPP;
+#ifdef PP2_PIN
   AdcPin m_AdcPP2;
+#endif
 
   void LoadCfg(uint8_t idx);
   void SaveCfg(uint8_t idx);

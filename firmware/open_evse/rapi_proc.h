@@ -286,7 +286,8 @@ SN - set cable temperature sensor configuration (requires CABLE_TEMPERATURE_MONI
    to pin 1 automatically disables PP auto ampacity ($FF P 0), and enabling
    PP auto ampacity automatically unassigns every source on pin 1. The two
    functions cannot both own that pin.
- r25(decimal): NTC nominal resistance at 25C, in ohms. range 100-65535.
+ r25(decimal): NTC nominal resistance at 25C, in ohms. range 100-65534
+   (65535 is reserved - it reads back as an erased EEPROM word).
  beta(decimal): NTC beta coefficient. range 1000-6000.
  offset(decimal, signed): calibration offset added to the computed reading,
    in 10ths of a degree Celsius. range -2000..2000.
@@ -577,15 +578,25 @@ Z0 closems holdpwm
 // per target so AVR RAM cost stays zero.
 // The longest inbound command is likewise sized here. With
 // CABLE_TEMPERATURE_MONITORING that is the 6-argument form of $SN, whose
-// worst case is "$SN 3 2 65535 6000 -2000 1500 :XX^XX" = 36 chars + NUL, so
+// worst case is "$SN 3 2 65534 6000 -2000 1500 :XX^XX" = 36 chars + NUL, so
 // AVR needs the larger buffer too.
-#if defined(TARGET_SAMD) || defined(CABLE_TEMPERATURE_MONITORING)
+// With RELAY_HEALTH, the $GL response text (RAPI_GL_MAX_LEN, see
+// open_evse.h) is longer than either, on every target.
+#if defined(RELAY_HEALTH)
+#define ESRAPI_BUFLEN (RAPI_GL_MAX_LEN + 1)
+#elif defined(TARGET_SAMD) || defined(CABLE_TEMPERATURE_MONITORING)
 #define ESRAPI_BUFLEN 40
 #else
 #define ESRAPI_BUFLEN 32
 #endif
 #if defined(MCU_ID_LEN) && (ESRAPI_BUFLEN < (2*MCU_ID_LEN + 1))
 #error "ESRAPI_BUFLEN too small for the $GI response on this target"
+#endif
+#if defined(CABLE_TEMPERATURE_MONITORING) && (ESRAPI_BUFLEN < 40)
+#error "ESRAPI_BUFLEN too small for the 6-argument $SN command"
+#endif
+#if defined(RELAY_HEALTH) && (ESRAPI_BUFLEN < (RAPI_GL_MAX_LEN + 1))
+#error "ESRAPI_BUFLEN too small for the $GL response"
 #endif
 #define ESRAPI_SOC '$' // start of command
 #define ESRAPI_EOC 0xd // CR end of command

@@ -38,6 +38,8 @@ CableTempMonitor g_CableTempMonitor;
 #define CABLE_TEMP_CURVE_STEP_C      5
 #define CABLE_TEMP_CURVE_RATIO_SCALE 2000UL
 #define CABLE_TEMP_CURVE_CNT        39
+// reading reported for anything at or beyond the hot end of the table
+#define CABLE_TEMP_HOT_CLAMP_C10 ((CABLE_TEMP_CURVE_MIN_C + (CABLE_TEMP_CURVE_CNT-1)*CABLE_TEMP_CURVE_STEP_C) * 10)
 
 static const uint16_t s_ntcCurveX2000[CABLE_TEMP_CURVE_CNT] PROGMEM = {
   50028, //  -40C  R/R25=25.0141
@@ -102,7 +104,9 @@ static const uint16_t s_ntcCurveX2000[CABLE_TEMP_CURVE_CNT] PROGMEM = {
 void CableTempMonitor::Init()
 {
   m_AdcPP.init(PP_PIN);
+#ifdef PP2_PIN
   m_AdcPP2.init(PP2_PIN);
+#endif
 
   m_LastUpdate = 0;
 
@@ -237,7 +241,12 @@ int8_t CableTempMonitor::SetCfg(int32_t idx,int32_t pin,int32_t r25,int32_t beta
 
 uint16_t CableTempMonitor::ReadAdcAvg(uint8_t pin)
 {
+#ifdef PP2_PIN
   AdcPin *ap = (pin == CABLE_TEMP_PIN_PP) ? &m_AdcPP : &m_AdcPP2;
+#else
+  (void)pin; // CABLE_TEMP_PIN_MAX == PP: nothing else can be assigned
+  AdcPin *ap = &m_AdcPP;
+#endif
 
   uint32_t acc = 0;
   for (uint8_t i=0;i < CABLE_TEMP_ADC_SAMPLES;i++) {
@@ -279,7 +288,7 @@ int16_t CableTempMonitor::RatioToTempC10(uint32_t ratioX2000,uint16_t beta)
   // high is the fail-safe direction - a beta-corrected (and therefore lower)
   // clamp value could sit under a high panic threshold and never trip it.
   if (ratioX2000 <= lo) {
-    return (int16_t)((CABLE_TEMP_CURVE_MIN_C + (CABLE_TEMP_CURVE_CNT-1)*CABLE_TEMP_CURVE_STEP_C) * 10);
+    return (int16_t)CABLE_TEMP_HOT_CLAMP_C10;
   }
 
   // the table descends with temperature, so walk down until ratioX2000
@@ -335,6 +344,13 @@ int16_t CableTempMonitor::ReadSensor(uint8_t idx)
 
   int16_t t = RatioToTempC10(ratioX2000,c->beta);
   if (!CABLE_TEMP_IS_VALID(t)) return t; // sentinel - don't apply calibration to it
+
+  // At or past the hot end of the table the reading is "at least this hot",
+  // not a measurement, so calibration doesn't apply - and a negative offset
+  // must not be able to pull it back under the panic threshold (which can be
+  // at most CABLE_TEMP_MAX_PANIC == the clamp value), or the fail-safe clamp
+  // in RatioToTempC10() would never trip.
+  if (t >= CABLE_TEMP_HOT_CLAMP_C10) return t;
 
   return t + c->offset;
 }

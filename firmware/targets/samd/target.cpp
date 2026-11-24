@@ -1,4 +1,5 @@
 #include "open_evse.h"
+#include <wiring_private.h> // pinPeripheral()
 
 ExternalEEPROM g_eeprom;
 
@@ -165,8 +166,11 @@ void AdcPin::_adcInit() {
   // 3. Load factory calibration values from NVM (Non-Volatile Memory)
   // This maintains ADC accuracy even at high speeds
   uint32_t bias = (*((uint32_t *) ADC_FUSES_BIASCAL_ADDR) & ADC_FUSES_BIASCAL_Msk) >> ADC_FUSES_BIASCAL_Pos;
+  // LINEARITY_CAL is 8 bits split across two NVM words: bits 4:0 come from
+  // LINEARITY_0, bits 7:5 from LINEARITY_1 (same as the core's wiring.c)
   uint32_t linearity = (*((uint32_t *) ADC_FUSES_LINEARITY_0_ADDR) & ADC_FUSES_LINEARITY_0_Msk) >> ADC_FUSES_LINEARITY_0_Pos;
-  
+  linearity |= ((*((uint32_t *) ADC_FUSES_LINEARITY_1_ADDR) & ADC_FUSES_LINEARITY_1_Msk) >> ADC_FUSES_LINEARITY_1_Pos) << 5;
+
   adcSync();
   ADC->CALIB.reg = ADC_CALIB_BIAS_CAL(bias) | ADC_CALIB_LINEARITY_CAL(linearity);
 
@@ -223,16 +227,29 @@ uint32_t AdcPin::read() {
     default: return -1; // Invalid pin
   }
 
+  // The ADC only sees a pin routed to it through the PORT pin mux
+  // (peripheral function B, analog) - the datasheet requires it, and it
+  // also turns off the digital input buffer. analogRead() does this on every
+  // call; doing it once per AdcPin is enough, as nothing else reconfigures
+  // these pins.
+  if (!_pinMuxDone) {
+    pinPeripheral(_pinNum,PIO_ANALOG);
+    _pinMuxDone = true;
+  }
+
   // 1. Select the correct analog pin (MUXPOS)
   adcSync();
   ADC->INPUTCTRL.bit.MUXPOS = pinMux;
 
-  // 2. Trigger conversion using software trigger
+  // 2. Clear any stale Result Ready flag *before* starting, so the wait
+  //    below can only see this conversion's completion. (Clearing it after
+  //    START races the conversion: if it finished first, its flag was wiped
+  //    and the wait below would never end.)
+  ADC->INTFLAG.reg = ADC_INTFLAG_RESRDY;
+
+  // 3. Trigger conversion using software trigger
   adcSync();
   ADC->SWTRIG.bit.START = 1;
-
-  // 3. Clear the Result Ready flag to prepare for reading
-  ADC->INTFLAG.reg = ADC_INTFLAG_RESRDY;
 
   // 4. Wait for the conversion to complete
   while (ADC->INTFLAG.bit.RESRDY == 0);

@@ -531,6 +531,9 @@ void J1772EVSEController::FlushDeferredEepromWrites()
     m_RelayHotSwitchCntDirty = 0;
     eeprom_write_word((uint16_t*)EOFS_RELAY_HOTSWITCH_CNT,m_RelayHotSwitchCnt);
   }
+#ifdef RELAY_HEALTH
+  g_RelayHealth.FlushDeferredEepromWrites();
+#endif
 }
 #else
 void J1772EVSEController::FlushDeferredEepromWrites() {}
@@ -613,9 +616,28 @@ void J1772EVSEController::chargingOff(uint8_t emergency)
     m_RelayHotSwitchCntDirty = 1;
   }
   if (wasOn) {
-    m_RelayOpenTransitMs = waitRelayTransit(relayCmdMs,0);
+    if (emergency) {
+      // Don't time the open here. waitRelayTransit() spins on millis(), and
+      // in ISR context (gfi_isr) millis() does not advance - so if the
+      // contacts never report open (e.g. welded, the very case a GFI trip
+      // can coincide with) it would spin forever, petting the watchdog as it
+      // goes. Record "not measured" instead; RelayHealth ignores it.
+      m_RelayOpenTransitMs = RELAY_TRANSIT_TIMEOUT_MS;
+    }
+    else {
+      m_RelayOpenTransitMs = waitRelayTransit(relayCmdMs,0);
+    }
 #ifdef RELAY_HEALTH
-    g_RelayHealth.OnRelayOpen(hotOpen,m_LastRelayOpenCurrentMa,m_RelayOpenTransitMs);
+    // An emergency open skips the ammeter (m_LastRelayOpenCurrentMa is
+    // RELAY_OPEN_CURRENT_UNKNOWN), but it is still a hot break and must
+    // still cost contact life. Charge it at the last current the main loop
+    // measured - a RAM read, so no added trip latency. $GW keeps reporting
+    // the open itself as unmeasured.
+    int32_t damageMa = m_LastRelayOpenCurrentMa;
+#ifdef AMMETER
+    if (damageMa < 0) damageMa = m_ChargingCurrent;
+#endif // AMMETER
+    g_RelayHealth.OnRelayOpen(hotOpen,damageMa,m_RelayOpenTransitMs);
 #endif
   }
 #endif
@@ -1011,6 +1033,14 @@ uint8_t J1772EVSEController::AttemptStuckRelayRecovery()
     for (uint8_t cycle = 0; cycle < STUCK_RELAY_RECOVERY_CYCLES; cycle++) {
       uint16_t toggleMs = STUCK_RELAY_RECOVERY_START_MS - (STUCK_RELAY_RECOVERY_STEP_MS * cycle);
       if (toggleMs < STUCK_RELAY_RECOVERY_MIN_MS) toggleMs = STUCK_RELAY_RECOVERY_MIN_MS;
+
+      // The caller only checked for an EV once, but this runs for tens of
+      // seconds. Re-read the pilot before every close and abandon recovery,
+      // relay open, the moment an EV appears - never energize the contacts
+      // into a just-connected vehicle. Reported as not recovered, so the
+      // caller falls through to its normal stuck-relay handling.
+      ReadPilot();
+      if (EvConnected()) return 0;
 
       chargingOn();
       unsigned long start = millis();
@@ -2456,7 +2486,7 @@ void J1772EVSEController::Calibrate(PCALIB_DATA pcd)
   for (int l=0;l < 2;l++) {
     int reading;
     uint32_t tot = 0;
-    uint16_t plow = ADC_MAX
+    uint16_t plow = ADC_MAX;
     uint16_t phigh = 0;
     uint16_t avg = 0;
     m_Pilot.SetState(l ? PILOT_STATE_N12 : PILOT_STATE_P12);

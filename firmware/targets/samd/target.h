@@ -87,17 +87,21 @@ public:
 class AdcPin {
   static bool _adcInitDone;
   uint32_t _pinNum;
+  bool _pinMuxDone; // pin routed to the ADC (PORT PMUX function B) yet?
 
   void  _adcInit();
 public:
 
-  AdcPin() {}
+  AdcPin() : _pinMuxDone(false) {}
   AdcPin(uint32_t pinnum) {
     init(pinnum);
   }
 
+  // n.b. may run from a global constructor, before the core's init(), so
+  // the pin itself is configured lazily on the first read()
   void init(uint32_t pinnum) {
     _pinNum = pinnum;
+    _pinMuxDone = false;
   }
 
   // NB pin-number remap trap: the SAMD Arduino core's analogRead() does

@@ -38,10 +38,14 @@ reference is the supply on both targets (AVR `AVCC`, SAMD `INTVCC1` with
 | | ATmega328P | SAMD21 |
 |---|---|---|
 | `PP_PIN` (PP_READ) | ADC2 | PB09 (A2) |
-| `PP2_PIN` (PP2_READ) | ADC3 | PA04 (A3) |
+| `PP2_PIN` (PP2_READ) | — (not available) | PA04 (A3) |
 | ADC resolution | 10-bit | 12-bit |
 
-`PP2_PIN` was added to both targets' `pindefs.h`; `PP_PIN` already existed.
+`PP2_PIN` is defined only in the SAMD `pindefs.h`; `PP_PIN` already existed
+on both. On the 328P, ADC3 (PC3) is the front-panel button input, a
+pulled-up digital pin, so it cannot also carry an NTC divider. With no
+`PP2_PIN`, `CABLE_TEMP_PIN_MAX` drops to `1` and `$SN idx 2 …` is NAKed;
+only PP_READ can be assigned there.
 
 ## Sources
 
@@ -76,7 +80,7 @@ result. `CableTempMonitor::Init()` re-checks at boot as a corruption guard
 only; if a saved configuration somehow claims the pin for both, proximity
 pilot keeps it.
 
-`PP2_READ` has no such conflict.
+`PP2_READ` (SAMD only) has no such conflict.
 
 ## Temperature conversion
 
@@ -212,7 +216,7 @@ $SN idx pin r25 beta offset panic  full configuration
 |---|---|---|---|
 | `idx` | 0–3 | — | 0=EV1 1=EV2 2=IN1 3=IN2 |
 | `pin` | 0–2 | 0 | 0=unassigned 1=PP_READ 2=PP2_READ |
-| `r25` | 100–65535 | 10000 | NTC nominal resistance at 25 °C, Ω |
+| `r25` | 100–65534 | 10000 | NTC nominal resistance at 25 °C, Ω |
 | `beta` | 1000–6000 | 3443 | NTC beta coefficient |
 | `offset` | −2000…2000 | 0 | calibration offset, 10ths °C |
 | `panic` | 300–1500 | 900 | shutdown threshold, 10ths °C |

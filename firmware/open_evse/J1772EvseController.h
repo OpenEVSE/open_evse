@@ -389,14 +389,15 @@ public:
     eeprom_write_word((uint16_t*)EOFS_CURRENT_ZERO_THRESHOLD_MA,ma);
   }
   uint16_t GetRelayHotSwitchCnt() { return m_RelayHotSwitchCnt; }
-  // Persist any counter bumped on a no-blocking path (see
-  // m_RelayHotSwitchCntDirty). Must be called from the main loop only, never
-  // from an ISR. Cheap no-op when nothing is pending.
-  void FlushDeferredEepromWrites();
   int32_t GetLastRelayOpenCurrentMa() { return m_LastRelayOpenCurrentMa; }
   uint16_t GetRelayCloseTransitMs() { return m_RelayCloseTransitMs; }
   uint16_t GetRelayOpenTransitMs() { return m_RelayOpenTransitMs; }
 #endif // RELAY_ZC_SWITCH
+  // Persist any counter bumped on a no-blocking path (see
+  // m_RelayHotSwitchCntDirty, RelayHealth::OnRelayOpen()). Must be called
+  // from the main loop only, never from an ISR. Cheap no-op when nothing is
+  // pending, and an empty stub without RELAY_ZC_SWITCH.
+  void FlushDeferredEepromWrites();
   int8_t BootLockIsEnabled() { return !flagIsSet(ECF_BOOT_LOCK_DISABLED); }
   void EnableBootLock(uint8_t tf) {
     if (!tf) setFlags(ECF_BOOT_LOCK_DISABLED); 

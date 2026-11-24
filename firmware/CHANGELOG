@@ -3,6 +3,32 @@ Change Log
 20261123 D9.4.3
 - build: drop the m328p_core environment; rename m328p_LCD_WIFI to
   m328p_core_lcd. CI now builds only m328p_core_lcd and samd.
+- GFI / emergency relay open: no longer waits for the relay open-transit
+  confirmation, which spun on millis() inside gfi_isr() and could hang
+  forever on a welded relay. RelayHealth hot-open damage and transit-baseline
+  EEPROM writes are now deferred to the main loop (never from the ISR).
+- stuck-relay recovery: re-reads the pilot before every relay close and
+  abandons recovery, relay open, if an EV is plugged in mid-cycle.
+- RelayHealth:
+  - emergency opens are charged at the last measured current instead of
+    contributing zero wear
+  - electrical damage computed from mA without intermediate truncation;
+    sub-millionth remainders carry over, so small hot opens accumulate
+  - transit baseline learned at 0.01 ms, thermal index at x10000 (was x100,
+    which computed 0 for typical contact heating). $GL keeps its existing
+    scales. Baselines learned by earlier builds are discarded and relearned
+    (tagged sample-count byte in EEPROM).
+- RAPI: $GL response overflowed the RAPI buffer and g_sTmp (esp. on AVR);
+  buffers resized with #error guards. $SN/$GN reject arguments that overflow
+  int32 or contain non-digits instead of wrapping them into range.
+- cable temp: r25=65535 rejected (it reloaded as the default 10000 after a
+  reboot); a negative calibration offset can no longer pull the >=150C
+  hot-end clamp below the panic threshold; PP2 removed on the 328P, where
+  ADC3/PC3 is the front-panel button.
+- SAMD: GFI self-test fails (3) if the GFI output is still high after the
+  settle delay; $GQ reports 255 until a self-test has run; ADC uses all 8
+  linearity calibration bits, clears RESRDY before starting a conversion, and
+  routes the pin to the analog mux; samd_ice_dev (CALIBRATE) builds again.
 
 20261105 D9.4.2
 - SAMD GFI self test:
